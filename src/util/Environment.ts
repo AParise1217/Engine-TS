@@ -33,6 +33,10 @@ export default {
     NODE_AUTO_SUBSCRIBE_MEMBERS: tryParseBoolean(process.env.NODE_AUTO_SUBSCRIBE_MEMBERS, true),
     // addxp multiplier
     NODE_XPRATE: tryParseInt(process.env.NODE_XPRATE, 1),
+    // skip run energy drain entirely (QoL cheat)
+    NODE_INFINITE_RUN: tryParseBoolean(process.env.NODE_INFINITE_RUN, false),
+    // ms per game tick, lower = faster game speed (QoL cheat). vanilla is 600.
+    NODE_TICKRATE: tryParseInt(process.env.NODE_TICKRATE, 600),
     // production mode!
     NODE_PRODUCTION: tryParseBoolean(process.env.NODE_PRODUCTION, false),
     NODE_SUBMIT_INPUT: tryParseBoolean(process.env.NODE_SUBMIT_INPUT, false),

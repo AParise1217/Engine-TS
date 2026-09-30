@@ -683,7 +683,9 @@ export default class Player extends PathingEntity {
         if (this.delayed) {
             return;
         }
-        if (this.stepsTaken < 2) {
+        if (Environment.NODE_INFINITE_RUN) {
+            this.runenergy = 10000;
+        } else if (this.stepsTaken < 2) {
             const recovered = ((this.baseLevels[PlayerStat.AGILITY] / 9) | 0) + 8;
             this.runenergy = Math.min(this.runenergy + recovered, 10000);
         } else {

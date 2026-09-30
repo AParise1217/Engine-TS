@@ -35,6 +35,7 @@ import VarSharedType from '#/cache/config/VarSharedType.js';
 import { CrcBuffer32, makeCrcs } from '#/cache/CrcTable.js';
 import { preloadClient } from '#/cache/PreloadedPacks.js';
 import WordEnc from '#/cache/wordenc/WordEnc.js';
+import * as Bots from '#/engine/Bots.js';
 import { BlockWalk } from '#/engine/entity/BlockWalk.js';
 import { EntityLifeCycle } from '#/engine/entity/EntityLifeCycle.js';
 import { NpcList } from '#/engine/entity/EntityList.js';
@@ -117,7 +118,7 @@ class World {
     private static readonly PLAYERS: number = Environment.NODE_MAX_PLAYERS;
     private static readonly NPCS: number = Environment.NODE_MAX_NPCS;
 
-    private static readonly TICKRATE: number = 600; // ms (0.6s) - DO NOT CHANGE. This is only exposed for condensing time while testing long-running operations.
+    private static readonly TICKRATE: number = Environment.NODE_TICKRATE; // ms (0.6s vanilla). configurable via NODE_TICKRATE (QoL cheat) or the ::speed runtime command.
 
     private static readonly INV_STOCKRATE: number = 100; // 1m shop restocks
 
@@ -303,6 +304,14 @@ class World {
             this.gameMap.init();
         }
 
+        // ponytail: hardcoded archetypes/locations for now -- see Bots.ts.
+        Bots.spawnWoodcutterBot('_bot_woodcutter1', 3233, 3230, 0);
+        Bots.spawnFishermanBot('_bot_fisher1', 3102, 3424, 0); // Barbarian Village
+        Bots.spawnFishermanBot('_bot_fisher2', 2925, 3178, 0); // Musa Point
+        Bots.spawnFishermanBot('_bot_fisher3', 2986, 3176, 0);
+        Bots.spawnFiremakingBot('_bot_firemaker1', 3253, 3420, 0); // Varrock east bank
+        Bots.spawnGoblinFighterBot('_bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
+
         setTimeout(() => {
             this.loginThread.postMessage({
                 type: 'world_startup'
@@ -363,6 +372,10 @@ class World {
             // - movement
             // - modes
             this.processNpcs();
+
+            // ambient population bots (headless Players) -- same setInteraction path a real
+            // client's packet handler uses, just called directly instead of decoding a packet.
+            Bots.tick();
 
             // player processing
             // - primary queue
