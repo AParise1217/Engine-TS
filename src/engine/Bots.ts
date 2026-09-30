@@ -242,6 +242,22 @@ function equipArchetype(bot: Player, def: ArchetypeDef): void {
 
 type BotKind = 'woodcutter' | 'fisherman' | 'firemaker' | 'goblin_fighter';
 
+// Permanent record of every known bot "slot" -- created once via registerBot() and never removed.
+// active tracks whether a live Player currently exists for it; Task 2's wake/sleep scan is the only
+// thing that flips it. In this task it's always true -- registerBot() still spawns immediately, same
+// as the direct spawnXBot() calls it replaces, so this is a pure data-shape refactor, no behavior
+// change yet.
+interface BotDefinition {
+    kind: BotKind;
+    username: string;
+    homeX: number;
+    homeZ: number;
+    level: number;
+    active: boolean;
+}
+
+const definitions: BotDefinition[] = [];
+
 interface BotEntry {
     player: Player;
     kind: BotKind;
@@ -253,27 +269,61 @@ interface BotEntry {
     resting: boolean;
     targetHeldTicks: number;
     nextAppearanceRefreshTick: number;
+    definition: BotDefinition;
 }
 
 const bots: Set<BotEntry> = new Set();
 
-function spawn(kind: BotKind, username: string, x: number, z: number, level: number, grant: (bot: Player, inv: Inventory) => void): void {
-    const bot = PlayerLoading.load(username, new Packet(new Uint8Array(0)), null);
-    bot.x = x;
-    bot.z = z;
-    bot.level = level;
+// One grant function per BotKind instead of four separate exported spawnXBot() wrappers -- nothing
+// outside this file called them individually (World.ts's boot calls were the only caller, and this
+// task moves those onto registerBot()), so there's no reason to keep four public entry points open.
+const GRANTS: Record<BotKind, (bot: Player, inv: Inventory) => void> = {
+    woodcutter: (_bot, inv) => inv.add(getIds().tinderbox, 1),
+    fisherman: (_bot, inv) => grantFishingGear(inv),
+    // ponytail: no real bank interaction -- just tops the logs back up directly when it runs out,
+    // standing in for "walked to the bank and withdrew more". Upgrade to a real OpLoc bank
+    // withdrawal if the bot should ever look like it's actually banking.
+    firemaker: (_bot, inv) => {
+        inv.add(getIds().tinderbox, 1);
+        inv.add(getIds().logs, inv.freeSlotCount);
+    },
+    goblin_fighter: bot => {
+        const pool = getArchetypes();
+        const archetype = pickOne(Object.keys(pool) as Archetype[]);
+        equipArchetype(bot, pool[archetype]);
+    }
+};
+
+function spawn(definition: BotDefinition): void {
+    const bot = PlayerLoading.load(definition.username, new Packet(new Uint8Array(0)), null);
+    bot.x = definition.homeX;
+    bot.z = definition.homeZ;
+    bot.level = definition.level;
 
     const inv = bot.getInventory(getIds().inv);
     if (inv) {
-        grant(bot, inv);
+        GRANTS[definition.kind](bot, inv);
     }
 
     // stagger first seek (and first appearance refresh) so a large bot population doesn't all
     // scan -- or all re-encode their appearance -- on the same tick.
     const nextSeekTick = Math.floor(Math.random() * SEEK_INTERVAL_BASE);
     const nextAppearanceRefreshTick = Math.floor(Math.random() * APPEARANCE_REFRESH_INTERVAL);
-    bots.add({ player: bot, kind, homeX: x, homeZ: z, level, nextSeekTick, seekInterval: SEEK_INTERVAL_BASE, resting: false, targetHeldTicks: 0, nextAppearanceRefreshTick });
+    bots.add({
+        player: bot,
+        kind: definition.kind,
+        homeX: definition.homeX,
+        homeZ: definition.homeZ,
+        level: definition.level,
+        nextSeekTick,
+        seekInterval: SEEK_INTERVAL_BASE,
+        resting: false,
+        targetHeldTicks: 0,
+        nextAppearanceRefreshTick,
+        definition
+    });
     World.newPlayers.add(bot);
+    definition.active = true;
 }
 
 // Call once per tick a seek is actually attempted (i.e. the bot had no target and was due).
@@ -283,30 +333,12 @@ function backoffSeek(entry: BotEntry): void {
     entry.seekInterval = Math.min(entry.seekInterval * 2, SEEK_INTERVAL_MAX);
 }
 
-export function spawnWoodcutterBot(username: string, x: number, z: number, level: number): void {
-    spawn('woodcutter', username, x, z, level, (_bot, inv) => inv.add(getIds().tinderbox, 1));
-}
-
-export function spawnFishermanBot(username: string, x: number, z: number, level: number): void {
-    spawn('fisherman', username, x, z, level, (_bot, inv) => grantFishingGear(inv));
-}
-
-export function spawnFiremakingBot(username: string, x: number, z: number, level: number): void {
-    // ponytail: no real bank interaction -- just tops the logs back up directly when it runs out,
-    // standing in for "walked to the bank and withdrew more". Upgrade to a real OpLoc bank
-    // withdrawal if the bot should ever look like it's actually banking.
-    spawn('firemaker', username, x, z, level, (_bot, inv) => {
-        inv.add(getIds().tinderbox, 1);
-        inv.add(getIds().logs, inv.freeSlotCount);
-    });
-}
-
-export function spawnGoblinFighterBot(username: string, x: number, z: number, level: number): void {
-    spawn('goblin_fighter', username, x, z, level, bot => {
-        const pool = getArchetypes();
-        const archetype = pickOne(Object.keys(pool) as Archetype[]);
-        equipArchetype(bot, pool[archetype]);
-    });
+// Registers a bot "slot" and spawns it immediately -- Task 2 changes this to register only, adding
+// the scan that spawns/despawns it based on a real player's distance from homeX/homeZ.
+export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
+    const definition: BotDefinition = { kind, username, homeX: x, homeZ: z, level, active: false };
+    definitions.push(definition);
+    spawn(definition);
 }
 
 function grantFishingGear(inv: Inventory): void {

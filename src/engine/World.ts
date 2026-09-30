@@ -311,12 +311,12 @@ class World {
         }
 
         // ponytail: hardcoded archetypes/locations for now -- see Bots.ts.
-        Bots.spawnWoodcutterBot('_bot_woodcutter1', 3233, 3230, 0);
-        Bots.spawnFishermanBot('_bot_fisher1', 3102, 3424, 0); // Barbarian Village
-        Bots.spawnFishermanBot('_bot_fisher2', 2925, 3178, 0); // Musa Point
-        Bots.spawnFishermanBot('_bot_fisher3', 2986, 3176, 0);
-        Bots.spawnFiremakingBot('_bot_firemaker1', 3253, 3420, 0); // Varrock east bank
-        Bots.spawnGoblinFighterBot('_bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
+        Bots.registerBot('woodcutter', '_bot_woodcutter1', 3233, 3230, 0);
+        Bots.registerBot('fisherman', '_bot_fisher1', 3102, 3424, 0); // Barbarian Village
+        Bots.registerBot('fisherman', '_bot_fisher2', 2925, 3178, 0); // Musa Point
+        Bots.registerBot('fisherman', '_bot_fisher3', 2986, 3176, 0);
+        Bots.registerBot('firemaker', '_bot_firemaker1', 3253, 3420, 0); // Varrock east bank
+        Bots.registerBot('goblin_fighter', '_bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
 
         setTimeout(() => {
             this.loginThread.postMessage({
