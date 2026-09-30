@@ -426,6 +426,18 @@ export function tick(): void {
             continue;
         }
 
+        // A headless bot is a plain Player, not a NetworkPlayer -- it never goes through the
+        // packet-handling path that bumps lastConnected/lastResponse for a real client
+        // (NetworkPlayer.ts:63 and :80). Without this, processLogouts()'s existing
+        // no-connection/no-response timeouts (World.TIMEOUT_NO_CONNECTION, 50 ticks, checked first;
+        // World.TIMEOUT_NO_RESPONSE, 100 ticks) eventually force-log every bot out as if it silently
+        // disconnected. Confirmed live 2026-09-30: bumping only lastResponse still lost every bot by
+        // ~tick 54 -- TIMEOUT_NO_CONNECTION's shorter 50-tick threshold was the one actually firing.
+        // Bumping both here each tick is the bot-side equivalent of a real client's connection (and
+        // its packets) staying alive the whole session.
+        bot.lastConnected = World.currentTick;
+        bot.lastResponse = World.currentTick;
+
         if (!bot.target && (Math.abs(bot.x - entry.homeX) > HOME_DRIFT_LIMIT || Math.abs(bot.z - entry.homeZ) > HOME_DRIFT_LIMIT)) {
             // died and respawned elsewhere, most likely -- walk back to post rather than chase it
             bot.teleport(entry.homeX, entry.homeZ, entry.level);
