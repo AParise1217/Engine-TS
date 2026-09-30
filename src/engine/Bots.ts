@@ -411,6 +411,11 @@ function useHeldOnHeld(bot: Player, primary: number, secondary: number): void {
     }
 }
 
+// Every bot is active today -- Phase 2 of the scaling design adds a dormant/active split.
+export function getActiveBotCount(): number {
+    return bots.size;
+}
+
 export function tick(): void {
     const { inv: INV, tree: TREE, logs: LOGS, tinderbox: TINDERBOX, fishSpots: FISH_SPOTS, goblinTypes: GOBLIN_TYPES, coins: COINS } = getIds();
 
