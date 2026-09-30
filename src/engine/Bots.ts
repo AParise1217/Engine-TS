@@ -12,6 +12,9 @@ import ScriptProvider from '#/engine/script/ScriptProvider.js';
 import ScriptRunner from '#/engine/script/ScriptRunner.js';
 import ServerTriggerType from '#/engine/script/ServerTriggerType.js';
 import World from '#/engine/World.js';
+import { WorldStat } from '#/engine/WorldStat.js';
+import Environment from '#/util/Environment.js';
+import { printDebug } from '#/util/Logger.js';
 
 // Ambient "population" bots: real headless Players (no client -- see NetworkPlayer.isClientConnected)
 // driven by a tiny per-tick loop instead of packets, reusing the same setInteraction/executeScript
@@ -76,6 +79,25 @@ const TARGET_STICK_TICKS = 3;
 // check, not from Phase 1's cost data.
 const ACTIVATION_RADIUS = 20;
 const DEACTIVATION_RADIUS = 40;
+
+// Load-based breaker (spec Section 3): a safety net, not the primary scaling fix -- Section 2's
+// spatial activation is what keeps standing bot cost near zero. This only guards against a future
+// correctness bug or an unlucky cluster of active bots degrading the tick loop, the way the two
+// prior incidents (a missing seek backoff, then the single-arrow ranger) did before they were
+// root-caused and fixed.
+//
+// Phase 1's real on-device baseline (2026-09-30-ambient-bot-scaling-phase1-metrics.md, corrected
+// per that plan's own final review): 6 always-on bots cost up to 719ms/2548ms (28%) of a single
+// tick in the worst observed case. 0.9 leaves normal per-tick work its usual headroom while still
+// catching a bot-driven spike before it dominates the tick.
+const TICK_BUDGET_FRACTION = 0.9;
+// 10 consecutive over-budget ticks (5s at this hardware's default 500ms NODE_TICKRATE) before
+// shedding a bot -- long enough that a single transient npc/client-out spike (Phase 2's on-device
+// testing found these are the actual worst-case tick cost on this hardware, not bots -- see
+// CLAUDE.md's Phase 2 notes) doesn't trigger a shed, short enough that a genuinely sustained
+// bot-driven overload gets corrected within a few seconds. ponytail: retune once the spec's
+// Sequencing step 4 (a full-backlog re-baseline) exists.
+const OVERLOAD_TICKS_BEFORE_SHED = 10;
 
 // Rest, don't immediately re-engage, once HP drops below this fraction of max -- the fighter bot
 // was otherwise found to chip away net HP fight after fight (10->9->8->7->6->5->4 observed live,
@@ -283,6 +305,12 @@ interface BotEntry {
 
 const bots: Set<BotEntry> = new Set();
 
+let consecutiveOverrunTicks = 0;
+// Set fresh by scanActivation() every tick to the farthest-from-any-real-player bot that's
+// staying active (i.e. not already being put to sleep this tick by the DEACTIVATION_RADIUS
+// check below) -- tier 2 reuses this directly instead of a second distance pass.
+let farthestActive: BotEntry | null = null;
+
 // One grant function per BotKind instead of four separate exported spawnXBot() wrappers -- nothing
 // outside this file called them individually (World.ts's boot calls were the only caller, and this
 // task moves those onto registerBot()), so there's no reason to keep four public entry points open.
@@ -388,6 +416,8 @@ function scanActivation(): void {
         }
     }
 
+    farthestActive = null;
+    let farthestDist = -1;
     for (const entry of bots) {
         if (entry.player.loggingOut) {
             continue; // already leaving
@@ -399,6 +429,10 @@ function scanActivation(): void {
         if (nearestReal > DEACTIVATION_RADIUS) {
             entry.player.loggingOut = true;
             entry.definition.active = false;
+        } else if (nearestReal > farthestDist) {
+            // stays active this tick -- tier 2's own candidate to shed, if it ever comes to that.
+            farthestDist = nearestReal;
+            farthestActive = entry;
         }
     }
 }
@@ -534,6 +568,27 @@ export function getActiveBotCount(): number {
 export function tick(): void {
     scanActivation();
 
+    // lastCycleStats is the PREVIOUS tick's finished total -- this tick's own cycleStats[CYCLE]
+    // isn't set until the very end of World.cycle(), well after Bots.tick() runs. Tick 0 is
+    // naturally safe: lastCycleStats starts at 0, never over budget.
+    const overBudget = World.lastCycleStats[WorldStat.CYCLE] > Environment.NODE_TICKRATE * TICK_BUDGET_FRACTION;
+    if (overBudget) {
+        consecutiveOverrunTicks++;
+        if (consecutiveOverrunTicks >= OVERLOAD_TICKS_BEFORE_SHED && farthestActive) {
+            if (Environment.NODE_DEBUG_PROFILE) {
+                printDebug(`bot breaker: shedding ${farthestActive.player.username} after ${consecutiveOverrunTicks} consecutive over-budget ticks (tick ${World.currentTick})`);
+            }
+            farthestActive.player.loggingOut = true;
+            farthestActive.definition.active = false;
+            farthestActive = null;
+            // Give the shed a full window to take effect (or reveal the overload isn't
+            // bot-driven at all) before considering shedding a second bot.
+            consecutiveOverrunTicks = 0;
+        }
+    } else {
+        consecutiveOverrunTicks = 0;
+    }
+
     const { inv: INV, tree: TREE, logs: LOGS, tinderbox: TINDERBOX, fishSpots: FISH_SPOTS, goblinTypes: GOBLIN_TYPES, coins: COINS } = getIds();
 
     for (const entry of bots) {
@@ -588,6 +643,14 @@ export function tick(): void {
         }
 
         const dueToSeek = !bot.target && World.currentTick >= entry.nextSeekTick;
+
+        if (overBudget) {
+            // Tier 1: skip only this tick's per-bot-kind AI action logic. Lifecycle bookkeeping
+            // above (logout cleanup, connection keepalive, appearance refresh, home-drift
+            // teleport) still runs every tick regardless -- an active bot mid-interaction is
+            // ordinary processPlayers() work this function doesn't control either way.
+            continue;
+        }
 
         if (entry.kind === 'woodcutter') {
             if (inv.contains(LOGS) && inv.contains(TINDERBOX)) {
