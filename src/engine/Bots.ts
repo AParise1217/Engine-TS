@@ -14,6 +14,7 @@ import ServerTriggerType from '#/engine/script/ServerTriggerType.js';
 import World from '#/engine/World.js';
 import { WorldStat } from '#/engine/WorldStat.js';
 import Environment from '#/util/Environment.js';
+import { toSafeName } from '#/util/JString.js';
 import { printDebug } from '#/util/Logger.js';
 
 // Ambient "population" bots: real headless Players (no client -- see NetworkPlayer.isClientConnected)
@@ -372,8 +373,16 @@ function backoffSeek(entry: BotEntry): void {
 
 // Registers a bot "slot" dormant -- scanActivation() spawns/despawns it based on a real player's
 // distance from homeX/homeZ.
+//
+// toSafeName() here is the same base37 round-trip PlayerLoading.load() applies to every username
+// (RS2 usernames are hard-capped at 12 characters -- see JString.ts's toBase37). Normalizing once
+// here, rather than trusting every caller to hand-count <=12 characters, guarantees
+// scanActivation()'s definition.username-vs-player.username comparisons can never silently
+// mismatch the way 'bot_woodcutter1'/'bot_firemaker1' (both >12 chars, confirmed live to
+// truncate to 'bot_woodcutt'/'bot_firemake') did before this fix -- the same failure class the
+// Phase 2 final review already fixed for a leading underscore, just triggered by length instead.
 export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
-    definitions.push({ kind, username, homeX: x, homeZ: z, level, active: false });
+    definitions.push({ kind, username: toSafeName(username), homeX: x, homeZ: z, level, active: false });
 }
 
 function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number, z2: number, level2: number): number {
