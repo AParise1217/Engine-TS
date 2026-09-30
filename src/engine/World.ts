@@ -724,8 +724,11 @@ class World {
     // - close interface if attempting to logout
     private processPlayers(): void {
         const start: number = Date.now();
+        let realPlayerTurnMs = 0;
+        let botPlayerTurnMs = 0;
 
         for (const player of this.playerLoop.all()) {
+            const turnStart: number = performance.now();
             try {
                 if (player.delayed && this.currentTick >= player.delayedUntil) player.delayed = false;
 
@@ -762,8 +765,18 @@ class World {
                     player.client.close();
                 }
             }
+
+            // _bot_ prefix is the existing, already-load-bearing bot-identity convention (every
+            // spawn call site uses it) -- reused here instead of a new tagging structure.
+            if (player.username.startsWith('_bot_')) {
+                botPlayerTurnMs += performance.now() - turnStart;
+            } else {
+                realPlayerTurnMs += performance.now() - turnStart;
+            }
         }
 
+        this.realPlayerTurnMs = realPlayerTurnMs;
+        this.botPlayerTurnMs = botPlayerTurnMs;
         this.cycleStats[WorldStat.PLAYER] = Date.now() - start;
     }
 
