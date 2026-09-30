@@ -66,6 +66,17 @@ const SEEK_INTERVAL_MAX = 1000;
 // insurance against that whole class of bug, not just the one instance found so far.
 const TARGET_STICK_TICKS = 3;
 
+// Game-feel placeholders, not derived from Phase 1's tick-cost baseline (that measures cost, not
+// distance) -- picked relative to this file's existing seek radii (confirmed live distances: 14
+// tiles to the nearest tree, 3 to the nearest goblin, both inside LOC_SEEK_RADIUS/NPC_SEEK_RADIUS's
+// 18/15) so a bot is already awake and able to act by the time a real player would actually notice
+// it. DEACTIVATION_RADIUS must stay strictly larger than ACTIVATION_RADIUS -- the gap is the
+// hysteresis that stops a bot at the boundary from waking and sleeping every few ticks, same shape
+// as REST_HP_FRACTION/REST_RESUME_FRACTION below. ponytail: retune both from Task 4's on-device feel
+// check, not from Phase 1's cost data.
+const ACTIVATION_RADIUS = 20;
+const DEACTIVATION_RADIUS = 40;
+
 // Rest, don't immediately re-engage, once HP drops below this fraction of max -- the fighter bot
 // was otherwise found to chip away net HP fight after fight (10->9->8->7->6->5->4 observed live,
 // 2026-09-30) since it re-engaged a new goblin the instant the last one died, never leaving itself
@@ -336,9 +347,68 @@ function backoffSeek(entry: BotEntry): void {
 // Registers a bot "slot" and spawns it immediately -- Task 2 changes this to register only, adding
 // the scan that spawns/despawns it based on a real player's distance from homeX/homeZ.
 export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
-    const definition: BotDefinition = { kind, username, homeX: x, homeZ: z, level, active: false };
-    definitions.push(definition);
-    spawn(definition);
+    definitions.push({ kind, username, homeX: x, homeZ: z, level, active: false });
+}
+
+function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number, z2: number, level2: number): number {
+    if (level1 !== level2) {
+        // different floor -- never "near" regardless of how close x/z happen to be (e.g. a bridge
+        // or staircase tile directly above a ground-floor bot's home).
+        return Infinity;
+    }
+    return Math.max(Math.abs(x1 - x2), Math.abs(z1 - z2));
+}
+
+// Runs once per tick, before any per-bot AI logic. O(real players x definitions) pure arithmetic --
+// no zone traversal, no pathfinding -- cheap enough to always run, even at a much larger defined
+// population than today's 6.
+function scanActivation(): void {
+    const realPlayers: { x: number; z: number; level: number }[] = [];
+    const occupiedUsernames: Set<string> = new Set();
+
+    for (const player of World.playerLoop.all()) {
+        occupiedUsernames.add(player.username);
+        if (!player.username.startsWith('bot_')) {
+            realPlayers.push({ x: player.x, z: player.z, level: player.level });
+        }
+    }
+
+    for (const definition of definitions) {
+        if (definition.active || occupiedUsernames.has(definition.username)) {
+            // already active, or a previous instance of this same username hasn't finished logging
+            // out yet (e.g. it was just put to sleep mid-combat and is waiting out
+            // preventLogoutUntil) -- spawning now would collide with that still-live Player.
+            continue;
+        }
+        for (const player of realPlayers) {
+            if (chebyshevOrInfinity(player.x, player.z, player.level, definition.homeX, definition.homeZ, definition.level) <= ACTIVATION_RADIUS) {
+                spawn(definition);
+                break;
+            }
+        }
+    }
+
+    for (const entry of bots) {
+        if (entry.player.loggingOut) {
+            continue; // already leaving
+        }
+        let nearestReal = Infinity;
+        for (const player of realPlayers) {
+            nearestReal = Math.min(nearestReal, chebyshevOrInfinity(player.x, player.z, player.level, entry.homeX, entry.homeZ, entry.level));
+        }
+        if (nearestReal > DEACTIVATION_RADIUS) {
+            entry.player.loggingOut = true;
+            entry.definition.active = false;
+        }
+    }
+}
+
+export function getDormantBotCount(): number {
+    return definitions.length - bots.size;
+}
+
+export function getTotalBotCount(): number {
+    return definitions.length;
 }
 
 function grantFishingGear(inv: Inventory): void {
@@ -463,6 +533,8 @@ export function getActiveBotCount(): number {
 }
 
 export function tick(): void {
+    scanActivation();
+
     const { inv: INV, tree: TREE, logs: LOGS, tinderbox: TINDERBOX, fishSpots: FISH_SPOTS, goblinTypes: GOBLIN_TYPES, coins: COINS } = getIds();
 
     for (const entry of bots) {

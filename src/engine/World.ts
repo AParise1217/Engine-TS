@@ -519,7 +519,7 @@ class World {
                     `${this.cycleStats[WorldStat.WORLD]} ms world | ${this.cycleStats[WorldStat.CLIENT_IN]} ms client in | ${this.cycleStats[WorldStat.NPC]} ms npcs | ${this.cycleStats[WorldStat.PLAYER]} ms players | ${this.cycleStats[WorldStat.LOGOUT]} ms logout | ${this.cycleStats[WorldStat.LOGIN]} ms login | ${this.cycleStats[WorldStat.ZONE]} ms zones | ${this.cycleStats[WorldStat.CLIENT_OUT]} ms client out | ${this.cycleStats[WorldStat.CLEANUP]} ms cleanup`
                 );
                 printDebug(
-                    `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${Bots.getActiveBotCount()} active / 0 dormant / ${Bots.getActiveBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
+                    `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${Bots.getActiveBotCount()} active / ${Bots.getDormantBotCount()} dormant / ${Bots.getTotalBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
                 );
             }
 
