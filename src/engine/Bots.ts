@@ -36,6 +36,15 @@ const NPC_SEEK_RADIUS = 15;
 const LOOT_RADIUS = 5;
 const HOME_DRIFT_LIMIT = 30; // if a fight-bot dies and respawns elsewhere, walk it back home instead of chasing it
 
+// Player.masks & PlayerInfoProt.APPEARANCE only fires once, at spawn (equipArchetype's
+// buildAppearance() call) -- before any real player is ever nearby to receive it. Confirmed live
+// 2026-09-30 via a client-side decode trace: a real player who comes into view AFTER that one mask
+// pulse gets a PlayerEntity shell with all-zero appearance bytes (invisible model, but combat mask
+// bits like DAMAGE/ANIM still work independently, since those fire on their own each time). Forcing
+// the mask again periodically means any real player standing nearby eventually gets a correct
+// appearance within one interval, instead of never.
+const APPEARANCE_REFRESH_INTERVAL = 50;
+
 // A seek that finds nothing (or finds something the bot can never actually reach, e.g. across
 // water) retries every SEEK_INTERVAL_BASE ticks forever unless backed off -- fine on a fast dev
 // machine, but confirmed to visibly stall tick processing on the R36S (2026-09-30: three fishermen
@@ -437,6 +446,10 @@ export function tick(): void {
         // its packets) staying alive the whole session.
         bot.lastConnected = World.currentTick;
         bot.lastResponse = World.currentTick;
+
+        if (World.currentTick % APPEARANCE_REFRESH_INTERVAL === 0) {
+            bot.buildAppearance(bot.appearanceInv);
+        }
 
         if (!bot.target && (Math.abs(bot.x - entry.homeX) > HOME_DRIFT_LIMIT || Math.abs(bot.z - entry.homeZ) > HOME_DRIFT_LIMIT)) {
             // died and respawned elsewhere, most likely -- walk back to post rather than chase it
