@@ -518,6 +518,9 @@ class World {
                 printDebug(
                     `${this.cycleStats[WorldStat.WORLD]} ms world | ${this.cycleStats[WorldStat.CLIENT_IN]} ms client in | ${this.cycleStats[WorldStat.NPC]} ms npcs | ${this.cycleStats[WorldStat.PLAYER]} ms players | ${this.cycleStats[WorldStat.LOGOUT]} ms logout | ${this.cycleStats[WorldStat.LOGIN]} ms login | ${this.cycleStats[WorldStat.ZONE]} ms zones | ${this.cycleStats[WorldStat.CLIENT_OUT]} ms client out | ${this.cycleStats[WorldStat.CLEANUP]} ms cleanup`
                 );
+                printDebug(
+                    `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${Bots.getActiveBotCount()} active / 0 dormant / ${Bots.getActiveBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
+                );
             }
 
             this.currentTick++;
@@ -766,9 +769,14 @@ class World {
                 }
             }
 
-            // _bot_ prefix is the existing, already-load-bearing bot-identity convention (every
-            // spawn call site uses it) -- reused here instead of a new tagging structure.
-            if (player.username.startsWith('_bot_')) {
+            // Spawn call sites pass a leading-underscore username ('_bot_woodcutter1', ...), but
+            // PlayerLoading.load() round-trips every name through toBase37/fromBase37, whose
+            // base37 encoding cannot represent a LEADING underscore (it's positionally
+            // indistinguishable from "no digit yet" -- confirmed live: '_bot_woodcutter1' is
+            // actually stored as player.username === 'bot_woodcutter1', not '_bot_woodcutter1').
+            // Checking for the underscore this engine can actually store, not the one the spawn
+            // literal writes.
+            if (player.username.startsWith('bot_')) {
                 botPlayerTurnMs += performance.now() - turnStart;
             } else {
                 realPlayerTurnMs += performance.now() - turnStart;
