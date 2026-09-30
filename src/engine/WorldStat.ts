@@ -10,5 +10,6 @@ export const enum WorldStat {
     CLIENT_OUT,
     CLEANUP,
     BANDWIDTH_IN,
-    BANDWIDTH_OUT
+    BANDWIDTH_OUT,
+    BOTS
 }

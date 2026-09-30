@@ -158,8 +158,14 @@ class World {
     readonly objDelayedQueue: LinkList<ObjDelayedRequest> = new LinkList();
 
     // debug data
-    readonly lastCycleStats: Uint16Array = new Uint16Array(12);
-    readonly cycleStats: Uint16Array = new Uint16Array(12);
+    readonly lastCycleStats: Uint16Array = new Uint16Array(13); // one slot per WorldStat member
+    readonly cycleStats: Uint16Array = new Uint16Array(13);
+
+    // Real-vs-bot split of the per-player turn cost inside WorldStat.PLAYER. Sub-millisecond
+    // performance.now() deltas would truncate to 0 in a Uint16Array, so these are plain floats,
+    // not another cycleStats slot. Set in processPlayers().
+    realPlayerTurnMs: number = 0;
+    botPlayerTurnMs: number = 0;
 
     tickRate: number = World.TICKRATE; // speeds up when we're processing server shutdown
     currentTick: number = 0; // the current tick of the game world.
@@ -375,7 +381,9 @@ class World {
 
             // ambient population bots (headless Players) -- same setInteraction path a real
             // client's packet handler uses, just called directly instead of decoding a packet.
+            const botsStart: number = Date.now();
             Bots.tick();
+            this.cycleStats[WorldStat.BOTS] = Date.now() - botsStart;
 
             // player processing
             // - primary queue
@@ -483,6 +491,7 @@ class World {
             this.lastCycleStats[WorldStat.CLEANUP] = this.cycleStats[WorldStat.CLEANUP];
             this.lastCycleStats[WorldStat.BANDWIDTH_IN] = this.cycleStats[WorldStat.BANDWIDTH_IN];
             this.lastCycleStats[WorldStat.BANDWIDTH_OUT] = this.cycleStats[WorldStat.BANDWIDTH_OUT];
+            this.lastCycleStats[WorldStat.BOTS] = this.cycleStats[WorldStat.BOTS];
 
             // push stats to prometheus
             if (Environment.NODE_PRODUCTION) {
