@@ -42,8 +42,10 @@ const HOME_DRIFT_LIMIT = 30; // if a fight-bot dies and respawns elsewhere, walk
 // pulse gets a PlayerEntity shell with all-zero appearance bytes (invisible model, but combat mask
 // bits like DAMAGE/ANIM still work independently, since those fire on their own each time). Forcing
 // the mask again periodically means any real player standing nearby eventually gets a correct
-// appearance within one interval, instead of never.
-const APPEARANCE_REFRESH_INTERVAL = 50;
+// appearance within one interval, instead of never. Kept short (review feedback: 50 ticks = up to
+// 25s invisible at the on-device 500ms tickrate) since a refresh is just a flag + a cheap byte-buffer
+// regen -- negligible even at a much larger bot count than today's 6.
+const APPEARANCE_REFRESH_INTERVAL = 10;
 
 // A seek that finds nothing (or finds something the bot can never actually reach, e.g. across
 // water) retries every SEEK_INTERVAL_BASE ticks forever unless backed off -- fine on a fast dev
@@ -250,6 +252,7 @@ interface BotEntry {
     seekInterval: number;
     resting: boolean;
     targetHeldTicks: number;
+    nextAppearanceRefreshTick: number;
 }
 
 const bots: Set<BotEntry> = new Set();
@@ -265,9 +268,11 @@ function spawn(kind: BotKind, username: string, x: number, z: number, level: num
         grant(bot, inv);
     }
 
-    // stagger first seek so a large bot population doesn't all scan on the same tick at boot
+    // stagger first seek (and first appearance refresh) so a large bot population doesn't all
+    // scan -- or all re-encode their appearance -- on the same tick.
     const nextSeekTick = Math.floor(Math.random() * SEEK_INTERVAL_BASE);
-    bots.add({ player: bot, kind, homeX: x, homeZ: z, level, nextSeekTick, seekInterval: SEEK_INTERVAL_BASE, resting: false, targetHeldTicks: 0 });
+    const nextAppearanceRefreshTick = Math.floor(Math.random() * APPEARANCE_REFRESH_INTERVAL);
+    bots.add({ player: bot, kind, homeX: x, homeZ: z, level, nextSeekTick, seekInterval: SEEK_INTERVAL_BASE, resting: false, targetHeldTicks: 0, nextAppearanceRefreshTick });
     World.newPlayers.add(bot);
 }
 
@@ -447,8 +452,9 @@ export function tick(): void {
         bot.lastConnected = World.currentTick;
         bot.lastResponse = World.currentTick;
 
-        if (World.currentTick % APPEARANCE_REFRESH_INTERVAL === 0) {
+        if (World.currentTick >= entry.nextAppearanceRefreshTick) {
             bot.buildAppearance(bot.appearanceInv);
+            entry.nextAppearanceRefreshTick = World.currentTick + APPEARANCE_REFRESH_INTERVAL;
         }
 
         if (!bot.target && (Math.abs(bot.x - entry.homeX) > HOME_DRIFT_LIMIT || Math.abs(bot.z - entry.homeZ) > HOME_DRIFT_LIMIT)) {
