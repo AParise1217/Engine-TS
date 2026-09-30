@@ -525,6 +525,20 @@ class World {
                 printDebug(
                     `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${Bots.getActiveBotCount()} active / ${Bots.getDormantBotCount()} dormant / ${Bots.getTotalBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
                 );
+                // Bug report (2026-09-30): a real player couldn't move away from an ambient bot,
+                // which never engaged anything. Bots.ts never writes to a real Player's state --
+                // confirmed by reading every movement/interaction site -- so this can't be that
+                // bot blocking the player directly. This line exists to settle, from ONE on-device
+                // run, whether the player's own position is actually stuck server-side (not
+                // advancing tick to tick) or only feels stuck (advancing fine, but tier 1's
+                // permanent trip -- see the line above -- is starving bot AI while the real
+                // bottleneck, likely npc/client-out cost near a busy area, also delays everything
+                // else, including how quickly movement clicks get processed).
+                for (const player of this.playerLoop.all()) {
+                    if (!player.username.startsWith('bot_')) {
+                        printDebug(`real player ${player.username}: (${player.x}, ${player.z}) target=${player.target ? player.target.constructor.name : 'null'} targetOp=${player.targetOp} delayed=${player.delayed}`);
+                    }
+                }
             }
 
             this.currentTick++;
