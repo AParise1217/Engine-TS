@@ -311,12 +311,16 @@ class World {
         }
 
         // ponytail: hardcoded archetypes/locations for now -- see Bots.ts.
-        Bots.registerBot('woodcutter', '_bot_woodcutter1', 3233, 3230, 0);
-        Bots.registerBot('fisherman', '_bot_fisher1', 3102, 3424, 0); // Barbarian Village
-        Bots.registerBot('fisherman', '_bot_fisher2', 2925, 3178, 0); // Musa Point
-        Bots.registerBot('fisherman', '_bot_fisher3', 2986, 3176, 0);
-        Bots.registerBot('firemaker', '_bot_firemaker1', 3253, 3420, 0); // Varrock east bank
-        Bots.registerBot('goblin_fighter', '_bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
+        // No leading underscore -- PlayerLoading.load()'s base37 round-trip discards it anyway
+        // (World.ts:779's startsWith('bot_') check already depends on this), and Phase 2's
+        // scanActivation() compares this literal directly against player.username, which needs
+        // an exact match, not just the same post-normalization value.
+        Bots.registerBot('woodcutter', 'bot_woodcutter1', 3233, 3230, 0);
+        Bots.registerBot('fisherman', 'bot_fisher1', 3102, 3424, 0); // Barbarian Village
+        Bots.registerBot('fisherman', 'bot_fisher2', 2925, 3178, 0); // Musa Point
+        Bots.registerBot('fisherman', 'bot_fisher3', 2986, 3176, 0);
+        Bots.registerBot('firemaker', 'bot_firemaker1', 3253, 3420, 0); // Varrock east bank
+        Bots.registerBot('goblin_fighter', 'bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
 
         setTimeout(() => {
             this.loginThread.postMessage({

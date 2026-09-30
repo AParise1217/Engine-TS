@@ -254,10 +254,8 @@ function equipArchetype(bot: Player, def: ArchetypeDef): void {
 type BotKind = 'woodcutter' | 'fisherman' | 'firemaker' | 'goblin_fighter';
 
 // Permanent record of every known bot "slot" -- created once via registerBot() and never removed.
-// active tracks whether a live Player currently exists for it; Task 2's wake/sleep scan is the only
-// thing that flips it. In this task it's always true -- registerBot() still spawns immediately, same
-// as the direct spawnXBot() calls it replaces, so this is a pure data-shape refactor, no behavior
-// change yet.
+// active tracks whether a live Player currently exists for it; scanActivation() (the wake/sleep
+// scan) is the only thing that flips it.
 interface BotDefinition {
     kind: BotKind;
     username: string;
@@ -344,8 +342,8 @@ function backoffSeek(entry: BotEntry): void {
     entry.seekInterval = Math.min(entry.seekInterval * 2, SEEK_INTERVAL_MAX);
 }
 
-// Registers a bot "slot" and spawns it immediately -- Task 2 changes this to register only, adding
-// the scan that spawns/despawns it based on a real player's distance from homeX/homeZ.
+// Registers a bot "slot" dormant -- scanActivation() spawns/despawns it based on a real player's
+// distance from homeX/homeZ.
 export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
     definitions.push({ kind, username, homeX: x, homeZ: z, level, active: false });
 }
@@ -374,10 +372,12 @@ function scanActivation(): void {
     }
 
     for (const definition of definitions) {
-        if (definition.active || occupiedUsernames.has(definition.username)) {
-            // already active, or a previous instance of this same username hasn't finished logging
-            // out yet (e.g. it was just put to sleep mid-combat and is waiting out
-            // preventLogoutUntil) -- spawning now would collide with that still-live Player.
+        // A player removed via World.removePlayer() leaves playerLoop immediately but stays in
+        // World.logoutRequests until the login thread confirms the save (World.ts:1984-1989) --
+        // that window is exactly "previous instance hasn't finished logging out yet" (e.g. just
+        // put to sleep mid-combat, waiting out preventLogoutUntil). occupiedUsernames alone misses
+        // that window; final review (2026-09-30) confirmed the process actually goes through it.
+        if (definition.active || occupiedUsernames.has(definition.username) || World.logoutRequests.has(definition.username)) {
             continue;
         }
         for (const player of realPlayers) {
@@ -527,7 +527,6 @@ function useHeldOnHeld(bot: Player, primary: number, secondary: number): void {
     }
 }
 
-// Every bot is active today -- Phase 2 of the scaling design adds a dormant/active split.
 export function getActiveBotCount(): number {
     return bots.size;
 }
@@ -540,6 +539,12 @@ export function tick(): void {
     for (const entry of bots) {
         const bot = entry.player;
         if (bot.loggingOut) {
+            // Not just scanActivation()'s own sleep decision -- a bot can also leave via
+            // TIMEOUT_NO_RESPONSE/TIMEOUT_NO_CONNECTION, death, or world shutdown, none of which
+            // touch entry.definition. Without clearing it here too, final review (2026-09-30)
+            // found that definition would be stranded active forever with no live Player and
+            // could never wake again for the rest of the process.
+            entry.definition.active = false;
             bots.delete(entry);
             continue;
         }
