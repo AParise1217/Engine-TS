@@ -286,6 +286,13 @@ interface BotDefinition {
     homeZ: number;
     level: number;
     active: boolean;
+    // Tier 2's shed target is "farthest still-active", which an active bot normally satisfies
+    // long before DEACTIVATION_RADIUS is ever reached (homeX/homeZ is fixed, so this distance
+    // doesn't drift as the bot walks) -- without this cooldown, final review (2026-09-30) found
+    // the shed bot's own logout completes and it re-passes the ACTIVATION_RADIUS wake check
+    // within the same or next tick, undoing the shed almost immediately under the only
+    // conditions tier 2 can fire. 0 means "no cooldown active".
+    shedUntilTick: number;
 }
 
 const definitions: BotDefinition[] = [];
@@ -382,7 +389,21 @@ function backoffSeek(entry: BotEntry): void {
 // truncate to 'bot_woodcutt'/'bot_firemake') did before this fix -- the same failure class the
 // Phase 2 final review already fixed for a leading underscore, just triggered by length instead.
 export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
-    definitions.push({ kind, username: toSafeName(username), homeX: x, homeZ: z, level, active: false });
+    const safeName = toSafeName(username);
+
+    // Normalizing fixed the literal-vs-normalized mismatch, but two literals can still normalize
+    // to the SAME 12-char name (e.g. 'bot_woodcutter1'/'bot_woodcutter2' both -> 'bot_woodcutt') --
+    // final review (2026-09-30) confirmed this collides with CLAUDE.md's own recorded backlog of
+    // more woodcutter locations. Silent collision means only one of N same-prefix bots can ever
+    // exist, decided by definitions array order, with no error to explain why. This is a static
+    // boot-time registration list, not runtime input, so failing loudly here is the right call --
+    // better a crash at startup than a bot that silently never spawns and looks like yet another
+    // pathing bug.
+    if (definitions.some(d => d.username === safeName)) {
+        throw new Error(`duplicate bot username after base37 normalization: '${username}' -> '${safeName}'`);
+    }
+
+    definitions.push({ kind, username: safeName, homeX: x, homeZ: z, level, active: false, shedUntilTick: 0 });
 }
 
 function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number, z2: number, level2: number): number {
@@ -414,7 +435,12 @@ function scanActivation(): void {
         // that window is exactly "previous instance hasn't finished logging out yet" (e.g. just
         // put to sleep mid-combat, waiting out preventLogoutUntil). occupiedUsernames alone misses
         // that window; final review (2026-09-30) confirmed the process actually goes through it.
-        if (definition.active || occupiedUsernames.has(definition.username) || World.logoutRequests.has(definition.username)) {
+        if (
+            definition.active ||
+            occupiedUsernames.has(definition.username) ||
+            World.logoutRequests.has(definition.username) ||
+            World.currentTick < definition.shedUntilTick
+        ) {
             continue;
         }
         for (const player of realPlayers) {
@@ -589,6 +615,10 @@ export function tick(): void {
             }
             farthestActive.player.loggingOut = true;
             farthestActive.definition.active = false;
+            // Blocks scanActivation()'s wake check until this many ticks pass -- without it, the
+            // shed bot's own logout completing (usually within a tick or two) immediately
+            // satisfies ACTIVATION_RADIUS again and undoes the shed (final review, 2026-09-30).
+            farthestActive.definition.shedUntilTick = World.currentTick + OVERLOAD_TICKS_BEFORE_SHED;
             farthestActive = null;
             // Give the shed a full window to take effect (or reveal the overload isn't
             // bot-driven at all) before considering shedding a second bot.
@@ -658,6 +688,14 @@ export function tick(): void {
             // above (logout cleanup, connection keepalive, appearance refresh, home-drift
             // teleport) still runs every tick regardless -- an active bot mid-interaction is
             // ordinary processPlayers() work this function doesn't control either way.
+            if (dueToSeek) {
+                // Without this, nextSeekTick stays in the past for the entire skipped stretch,
+                // so the FIRST under-budget tick has every targetless active bot seek at once --
+                // exactly the thundering-herd scan this same stagger already exists to prevent at
+                // spawn time (see the comment on nextSeekTick in spawn()). Final review
+                // (2026-09-30): re-stagger on recovery the same way.
+                entry.nextSeekTick = World.currentTick + 1 + Math.floor(Math.random() * SEEK_INTERVAL_BASE);
+            }
             continue;
         }
 
