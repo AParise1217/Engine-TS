@@ -48,6 +48,12 @@ export default {
     NODE_DEBUG: tryParseBoolean(process.env.NODE_DEBUG, true),
     // measuring script execution
     NODE_DEBUG_PROFILE: tryParseBoolean(process.env.NODE_DEBUG_PROFILE, false),
+    // Kill switch for the ambient population bots (CLAUDE.md's fifth iteration onward) --
+    // 2026-09-30: an on-device-only client SIGSEGV and a 12.6s catastrophic tick both surfaced
+    // during this feature's Phase 3 testing, neither one root-caused yet (see CLAUDE.md's dated
+    // note). Defaults true (unchanged behavior); set false for a stable, bot-free session without
+    // reverting any code.
+    NODE_BOTS_ENABLED: tryParseBoolean(process.env.NODE_BOTS_ENABLED, true),
     // doing headless bot testing!
     NODE_DEBUG_SOCKET: tryParseBoolean(process.env.NODE_DEBUG_SOCKET, false),
     // no server routefinding until 2009
