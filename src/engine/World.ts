@@ -166,6 +166,10 @@ class World {
     // not another cycleStats slot. Set in processPlayers().
     realPlayerTurnMs: number = 0;
     botPlayerTurnMs: number = 0;
+    // Cost of Npc.huntAll() specifically, out of WorldStat.NPC's total. Reset in processNpcs(),
+    // accumulated from Npc.turn() -- sizes whether the per-crowd hunt rescan is actually the
+    // bottleneck before building a shared zone-level cache for it.
+    huntMs: number = 0;
 
     tickRate: number = World.TICKRATE; // speeds up when we're processing server shutdown
     currentTick: number = 0; // the current tick of the game world.
@@ -525,7 +529,7 @@ class World {
                     `${this.cycleStats[WorldStat.WORLD]} ms world | ${this.cycleStats[WorldStat.CLIENT_IN]} ms client in | ${this.cycleStats[WorldStat.NPC]} ms npcs | ${this.cycleStats[WorldStat.PLAYER]} ms players | ${this.cycleStats[WorldStat.LOGOUT]} ms logout | ${this.cycleStats[WorldStat.LOGIN]} ms login | ${this.cycleStats[WorldStat.ZONE]} ms zones | ${this.cycleStats[WorldStat.CLIENT_OUT]} ms client out | ${this.cycleStats[WorldStat.CLEANUP]} ms cleanup`
                 );
                 printDebug(
-                    `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${Bots.getActiveBotCount()} active / ${Bots.getDormantBotCount()} dormant / ${Bots.getTotalBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
+                    `${this.cycleStats[WorldStat.BOTS]} ms bots(ai) | ${this.botPlayerTurnMs.toFixed(2)} ms bot turns | ${this.realPlayerTurnMs.toFixed(2)} ms real turns | ${this.huntMs.toFixed(2)} ms hunt scans | ${Bots.getActiveBotCount()} active / ${Bots.getDormantBotCount()} dormant / ${Bots.getTotalBotCount()} total bots | overrun=${this.cycleStats[WorldStat.CYCLE] > this.tickRate}`
                 );
                 // Bug report (2026-09-30): a real player couldn't move away from an ambient bot,
                 // which never engaged anything. Bots.ts never writes to a real Player's state --
@@ -725,6 +729,7 @@ class World {
     // - modes
     private processNpcs(): void {
         const start: number = Date.now();
+        this.huntMs = 0;
         for (const npc of this.npcs) {
             try {
                 npc.turn();

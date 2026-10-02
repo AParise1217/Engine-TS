@@ -162,7 +162,9 @@ export default class Npc extends PathingEntity {
             if (hunt.nobodyNear !== HuntNobodyNear.PAUSEHUNT || rsbuf.getNpcObservers(this.nid) > 0 || hunt.type === HuntModeType.PLAYER) {
                 // - hunt npc/obj/loc
                 if (hunt && hunt.type !== HuntModeType.PLAYER) {
+                    const huntStart: number = performance.now();
                     this.huntAll(hunt);
+                    World.huntMs += performance.now() - huntStart;
                 }
 
                 // Increment huntclock
