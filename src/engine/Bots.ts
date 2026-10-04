@@ -17,6 +17,7 @@ import { WorldStat } from '#/engine/WorldStat.js';
 import Environment from '#/util/Environment.js';
 import { toSafeName } from '#/util/JString.js';
 import { printDebug } from '#/util/Logger.js';
+import { CHARACTER_POOL, jitterOffset, pickOne, type PoolCharacter, randInt } from '#/engine/BotPool.js';
 
 // Ambient "population" bots: real headless Players (no client -- see NetworkPlayer.isClientConnected)
 // driven by a tiny per-tick loop instead of packets, reusing the same setInteraction/executeScript
@@ -269,14 +270,6 @@ function getArchetypes(): Record<Archetype, ArchetypeDef> {
     return archetypes;
 }
 
-function randInt(min: number, max: number): number {
-    return min + Math.floor(Math.random() * (max - min + 1));
-}
-
-function pickOne<T>(pool: T[]): T {
-    return pool[Math.floor(Math.random() * pool.length)];
-}
-
 function equipArchetype(bot: Player, def: ArchetypeDef): void {
     for (const [stat, min, max] of def.stats) {
         bot.setLevel(stat, randInt(min, max));
@@ -294,16 +287,18 @@ function equipArchetype(bot: Player, def: ArchetypeDef): void {
 
 type BotKind = 'woodcutter' | 'fisherman' | 'firemaker' | 'fighter';
 
-// Permanent record of every known bot "slot" -- created once via registerBot() and never removed.
-// active tracks whether a live Player currently exists for it; scanActivation() (the wake/sleep
-// scan) is the only thing that flips it.
-interface BotDefinition {
+const MAX_SLOTS_PER_SITE = 3;
+const JITTER_TILES = 2;
+
+// Permanent record of every known bot "site" -- created once via registerBot() and never removed.
+// activeCount tracks how many live Player slots currently exist for it (0..MAX_SLOTS_PER_SITE);
+// scanActivation() is the only thing that changes it. targetSlotCount is the random population
+// size rolled for the CURRENT visit (-1 means "no visit in progress, roll fresh on next wake").
+interface BotSite {
     kind: BotKind;
-    username: string;
     homeX: number;
     homeZ: number;
     level: number;
-    active: boolean;
     // Only meaningful for kind 'fighter' -- NpcType debugnames of the monster(s) to attack (e.g.
     // ['goblin'], ['cow'], ['ardougne_guard']). Generalized off the original goblin-only fighter so
     // a new fight-bot location is just a registerBot() call, not new code.
@@ -311,27 +306,25 @@ interface BotDefinition {
     // Only meaningful for kind 'woodcutter' -- LocType debugname of the tree species to chop (e.g.
     // 'tree', 'willowtree', 'magictree'). Generalized the same way as targetNpc above.
     targetLoc: string;
-    gender: number; // 0 = male, 1 = female (Player.gender's own encoding)
-    // Tier 2's shed target is "farthest still-active", which an active bot normally satisfies
-    // long before DEACTIVATION_RADIUS is ever reached (homeX/homeZ is fixed, so this distance
-    // doesn't drift as the bot walks) -- without this cooldown, final review (2026-09-30) found
-    // the shed bot's own logout completes and it re-passes the ACTIVATION_RADIUS wake check
-    // within the same or next tick, undoing the shed almost immediately under the only
-    // conditions tier 2 can fire. 0 means "no cooldown active".
+    // Tier 2's shed cooldown -- 0 means "no cooldown active". Blocks ALL refill for this site
+    // (every slot, not just the one shed) until it expires, same semantic as before this task.
     shedUntilTick: number;
+    activeCount: number;
+    targetSlotCount: number;
 }
 
-const definitions: BotDefinition[] = [];
+const sites: BotSite[] = [];
 
-// Real-vs-bot identity used to be a plain `username.startsWith('bot_')` string check (3 call sites,
-// Bots.ts + World.ts) -- fine as long as every bot login name carried that reserved prefix, but that
-// prefix is also what made every ambient bot show up to a real player as "Bot Fisher1" over its head
-// and in its right-click menu (toDisplayName() just title-cases the literal username -- there is no
-// separate server-controlled display name, see World.ts's login flow). Decoupling the two here lets
-// bot usernames be actual in-universe names (World.ts) without losing the real/bot distinction
-// everywhere else. A plain Set, not a regex/convention, so a bot's name can be anything that fits
-// RS2's 12-char base37 charset.
-const botUsernames: Set<string> = new Set();
+// Real-vs-bot identity used to be a plain `username.startsWith('bot_')` string check -- fine as
+// long as every bot login name carried that reserved prefix, but that prefix is also what made
+// every ambient bot show up to a real player as "Bot Fisher1" over its head and in its right-click
+// menu (toDisplayName() just title-cases the literal username -- there is no separate
+// server-controlled display name, see World.ts's login flow). A plain Set, not a regex/convention,
+// so a bot's name can be anything that fits RS2's 12-char base37 charset.
+//
+// Built once from the pool, not from site registration -- identity is drawn dynamically at spawn
+// time now (see registerBot()/spawn() below), so there's no fixed per-site username to register.
+const botUsernames: Set<string> = new Set(CHARACTER_POOL.map(c => toSafeName(c.name)));
 
 export function isBotUsername(username: string): boolean {
     return botUsernames.has(username);
@@ -349,9 +342,9 @@ interface BotEntry {
     targetHeldTicks: number;
     nextAppearanceRefreshTick: number;
     nextChatTick: number;
-    targetTypeIds: number[]; // resolved once at spawn from definition.targetNpc -- only used by kind 'fighter'
-    targetLocId: number; // resolved once at spawn from definition.targetLoc -- only used by kind 'woodcutter'
-    definition: BotDefinition;
+    targetTypeIds: number[]; // resolved once at spawn from site.targetNpc -- only used by kind 'fighter'
+    targetLocId: number; // resolved once at spawn from site.targetLoc -- only used by kind 'woodcutter'
+    site: BotSite;
 }
 
 const bots: Set<BotEntry> = new Set();
@@ -398,17 +391,20 @@ const GRANTS: Record<BotKind, (bot: Player, inv: Inventory) => void> = {
     }
 };
 
-function spawn(definition: BotDefinition): void {
-    const bot = PlayerLoading.load(definition.username, new Packet(new Uint8Array(0)), null);
-    bot.x = definition.homeX;
-    bot.z = definition.homeZ;
-    bot.level = definition.level;
-    bot.gender = definition.gender;
+function spawn(site: BotSite, character: PoolCharacter): void {
+    const safeName = toSafeName(character.name);
+    const bot = PlayerLoading.load(safeName, new Packet(new Uint8Array(0)), null);
+    const homeX = site.homeX + jitterOffset(JITTER_TILES);
+    const homeZ = site.homeZ + jitterOffset(JITTER_TILES);
+    bot.x = homeX;
+    bot.z = homeZ;
+    bot.level = site.level;
+    bot.gender = character.gender;
     bot.buildAppearance(bot.appearanceInv);
 
     const inv = bot.getInventory(getIds().inv);
     if (inv) {
-        GRANTS[definition.kind](bot, inv);
+        GRANTS[site.kind](bot, inv);
     }
 
     // stagger first seek (and first appearance refresh, and first chat line) so a large bot
@@ -419,22 +415,22 @@ function spawn(definition: BotDefinition): void {
     const nextChatTick = World.currentTick + randInt(CHAT_INTERVAL_MIN, CHAT_INTERVAL_MAX);
     bots.add({
         player: bot,
-        kind: definition.kind,
-        homeX: definition.homeX,
-        homeZ: definition.homeZ,
-        level: definition.level,
+        kind: site.kind,
+        homeX,
+        homeZ,
+        level: site.level,
         nextSeekTick,
         seekInterval: SEEK_INTERVAL_BASE,
         resting: false,
         targetHeldTicks: 0,
         nextAppearanceRefreshTick,
         nextChatTick,
-        targetTypeIds: definition.targetNpc.map(name => NpcType.getId(name)),
-        targetLocId: LocType.getId(definition.targetLoc),
-        definition
+        targetTypeIds: site.targetNpc.map(name => NpcType.getId(name)),
+        targetLocId: LocType.getId(site.targetLoc),
+        site
     });
     World.newPlayers.add(bot);
-    definition.active = true;
+    site.activeCount++;
 }
 
 // Call once per tick a seek is actually attempted (i.e. the bot had no target and was due).
@@ -444,33 +440,12 @@ function backoffSeek(entry: BotEntry): void {
     entry.seekInterval = Math.min(entry.seekInterval * 2, SEEK_INTERVAL_MAX);
 }
 
-// Registers a bot "slot" dormant -- scanActivation() spawns/despawns it based on a real player's
-// distance from homeX/homeZ.
-//
-// toSafeName() here is the same base37 round-trip PlayerLoading.load() applies to every username
-// (RS2 usernames are hard-capped at 12 characters -- see JString.ts's toBase37). Normalizing once
-// here, rather than trusting every caller to hand-count <=12 characters, guarantees
-// scanActivation()'s definition.username-vs-player.username comparisons can never silently
-// mismatch the way 'bot_woodcutter1'/'bot_firemaker1' (both >12 chars, confirmed live to
-// truncate to 'bot_woodcutt'/'bot_firemake') did before this fix -- the same failure class the
-// Phase 2 final review already fixed for a leading underscore, just triggered by length instead.
-export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number, targetNpc: string[] = [], targetLoc: string = 'tree', gender: number = 0): void {
-    const safeName = toSafeName(username);
-
-    // Normalizing fixed the literal-vs-normalized mismatch, but two literals can still normalize
-    // to the SAME 12-char name (e.g. 'bot_woodcutter1'/'bot_woodcutter2' both -> 'bot_woodcutt') --
-    // final review (2026-09-30) confirmed this collides with CLAUDE.md's own recorded backlog of
-    // more woodcutter locations. Silent collision means only one of N same-prefix bots can ever
-    // exist, decided by definitions array order, with no error to explain why. This is a static
-    // boot-time registration list, not runtime input, so failing loudly here is the right call --
-    // better a crash at startup than a bot that silently never spawns and looks like yet another
-    // pathing bug.
-    if (definitions.some(d => d.username === safeName)) {
-        throw new Error(`duplicate bot username after base37 normalization: '${username}' -> '${safeName}'`);
-    }
-
-    definitions.push({ kind, username: safeName, homeX: x, homeZ: z, level, active: false, shedUntilTick: 0, targetNpc, targetLoc, gender });
-    botUsernames.add(safeName);
+// Registers a bot "site" with zero active slots -- scanActivation() rolls a random population
+// (0..MAX_SLOTS_PER_SITE) and spawns/despawns/refills it based on a real player's distance from
+// homeX/homeZ. Each spawned slot draws its own name/gender from CHARACTER_POOL and a small
+// position jitter from the site's anchor -- see spawn().
+export function registerBot(kind: BotKind, x: number, z: number, level: number, targetNpc: string[] = [], targetLoc: string = 'tree'): void {
+    sites.push({ kind, homeX: x, homeZ: z, level, targetNpc, targetLoc, shedUntilTick: 0, activeCount: 0, targetSlotCount: -1 });
 }
 
 function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number, z2: number, level2: number): number {
@@ -539,12 +514,14 @@ function scanActivation(): void {
     }
 }
 
-export function getDormantBotCount(): number {
-    return definitions.length - bots.size;
+// "Total" is now capacity (every site at its max), not a 1:1 site:bot count -- each site can hold
+// up to MAX_SLOTS_PER_SITE bots, not exactly one.
+export function getTotalBotCount(): number {
+    return sites.length * MAX_SLOTS_PER_SITE;
 }
 
-export function getTotalBotCount(): number {
-    return definitions.length;
+export function getDormantBotCount(): number {
+    return getTotalBotCount() - bots.size;
 }
 
 function grantFishingGear(inv: Inventory): void {
