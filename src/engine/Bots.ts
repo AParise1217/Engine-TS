@@ -376,6 +376,13 @@ interface BotEntry {
     nextChatTick: number;
     targetTypeIds: number[]; // resolved once at spawn from site.targetNpc -- only used by kind 'fighter'
     targetLocId: number; // resolved once at spawn from site.targetLoc -- only used by kind 'woodcutter'
+    // Only used by kind 'fighter'. lastSeekTargetUid is the npc.uid the most recent setInteraction
+    // was aimed at; avoidNpcUid is a one-shot exclusion for the NEXT seek, set when a target clears
+    // before it ever "sticks" (see tick()'s held-ticks block) -- most commonly a single-combat-zone
+    // rejection ("Someone else is fighting that"), not a real failure to find anything. -1 means "no
+    // exclusion"/"no target tracked".
+    lastSeekTargetUid: number;
+    avoidNpcUid: number;
     site: BotSite;
 }
 
@@ -459,6 +466,8 @@ function spawn(site: BotSite, character: PoolCharacter): void {
         nextChatTick,
         targetTypeIds: site.targetNpc.map(name => NpcType.getId(name)),
         targetLocId: LocType.getId(site.targetLoc),
+        lastSeekTargetUid: -1,
+        avoidNpcUid: -1,
         site
     });
     World.newPlayers.add(bot);
@@ -636,14 +645,18 @@ function findNearestObj(x: number, z: number, level: number, objTypeId: number, 
     return null;
 }
 
-function findNearestNpc(x: number, z: number, level: number, typeIds: number[], radius: number) {
+// excludeUid skips one specific npc instance (Npc.uid, stable for its lifetime) -- used to avoid
+// immediately re-picking an npc that just rejected an attack (e.g. "Someone else is fighting
+// that"), rather than failing against the same contested target over and over while a real,
+// unengaged one of the same type might be only slightly farther away.
+function findNearestNpc(x: number, z: number, level: number, typeIds: number[], radius: number, excludeUid = -1) {
     let best = null;
     let bestDist = Infinity;
 
     for (let dx = -radius; dx <= radius; dx += 8) {
         for (let dz = -radius; dz <= radius; dz += 8) {
             for (const npc of World.gameMap.getZone(x + dx, z + dz, level).getAllNpcsSafe(true)) {
-                if (!typeIds.includes(npc.type)) {
+                if (!typeIds.includes(npc.type) || npc.uid === excludeUid) {
                     continue;
                 }
 
@@ -829,7 +842,15 @@ export function tick(): void {
                 entry.seekInterval = SEEK_INTERVAL_BASE;
             }
         } else {
+            // Cleared before it ever stuck (0 < held < TARGET_STICK_TICKS) -- for a fighter, this
+            // is almost always a single-combat-zone rejection ("Someone else is fighting that"),
+            // not a real pathing failure. Avoid that exact npc on the very next seek instead of
+            // immediately re-picking the same contested target and failing again.
+            if (entry.targetHeldTicks > 0 && entry.targetHeldTicks < TARGET_STICK_TICKS && entry.lastSeekTargetUid !== -1) {
+                entry.avoidNpcUid = entry.lastSeekTargetUid;
+            }
             entry.targetHeldTicks = 0;
+            entry.lastSeekTargetUid = -1;
         }
 
         const dueToSeek = !bot.target && World.currentTick >= entry.nextSeekTick;
@@ -891,9 +912,11 @@ export function tick(): void {
                 if (loot) {
                     bot.setInteraction(Interaction.ENGINE, loot, TAKE_OP);
                 } else if (!entry.resting) {
-                    const target = findNearestNpc(bot.x, bot.z, bot.level, entry.targetTypeIds, NPC_SEEK_RADIUS);
+                    const target = findNearestNpc(bot.x, bot.z, bot.level, entry.targetTypeIds, NPC_SEEK_RADIUS, entry.avoidNpcUid);
+                    entry.avoidNpcUid = -1; // one-shot -- consumed by this attempt regardless of outcome
                     if (target) {
                         bot.setInteraction(Interaction.ENGINE, target, ATTACK_OP);
+                        entry.lastSeekTargetUid = target.uid;
                     }
                 }
                 backoffSeek(entry);
