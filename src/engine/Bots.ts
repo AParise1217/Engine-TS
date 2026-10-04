@@ -525,6 +525,16 @@ function scanActivation(): void {
             }
         }
         if (!nearbyPlayer) {
+            // A visit that rolled 0 (see below) never spawns a BotEntry, so tick()'s own
+            // loggingOut cleanup -- the usual place targetSlotCount resets to -1 -- never runs
+            // for it. Without this, a site unlucky enough to roll 0 on its first wake would stay
+            // rolled at 0 forever, even across later visits, since nothing else ever resets it
+            // (confirmed live 2026-10-04: a market-guard site stayed empty for 5+ minutes
+            // straight). Catching it here, once the visit itself has ended, covers that case
+            // without double-resetting a site that still has live bots mid-deactivation.
+            if (site.activeCount === 0) {
+                site.targetSlotCount = -1;
+            }
             continue;
         }
 
