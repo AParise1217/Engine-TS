@@ -17,7 +17,7 @@ import { WorldStat } from '#/engine/WorldStat.js';
 import Environment from '#/util/Environment.js';
 import { toSafeName } from '#/util/JString.js';
 import { printDebug } from '#/util/Logger.js';
-import { CHARACTER_POOL, jitterOffset, pickOne, type PoolCharacter, randInt } from '#/engine/BotPool.js';
+import { CHARACTER_POOL, jitterOffset, pickOne, pickUnusedCharacter, type PoolCharacter, randInt, rollSlotCount } from '#/engine/BotPool.js';
 
 // Ambient "population" bots: real headless Players (no client -- see NetworkPlayer.isClientConnected)
 // driven by a tiny per-tick loop instead of packets, reusing the same setInteraction/executeScript
@@ -457,39 +457,59 @@ function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number,
     return Math.max(Math.abs(x1 - x2), Math.abs(z1 - z2));
 }
 
-// Runs once per tick, before any per-bot AI logic. O(real players x definitions) pure arithmetic --
+// Runs once per tick, before any per-bot AI logic. O(real players x sites) pure arithmetic --
 // no zone traversal, no pathfinding -- cheap enough to always run, even at a much larger defined
-// population than today's 6.
+// site count than today's 14.
 function scanActivation(): void {
     const realPlayers: { x: number; z: number; level: number }[] = [];
-    const occupiedUsernames: Set<string> = new Set();
+    // Everyone (real or bot) currently live, plus anyone mid-logout -- the set of usernames a
+    // freshly-picked pool character must NOT collide with. A player removed via
+    // World.removePlayer() leaves playerLoop immediately but stays in World.logoutRequests until
+    // the login thread confirms the save; that window is exactly "a name just freed up, but its
+    // save isn't done yet" (final review of Phase 2, 2026-09-30, found the process actually goes
+    // through it for real players -- the same risk applies to a bot slot mid-shed/mid-death).
+    const takenUsernames: Set<string> = new Set();
 
     for (const player of World.playerLoop.all()) {
-        occupiedUsernames.add(player.username);
+        takenUsernames.add(player.username);
         if (!botUsernames.has(player.username)) {
             realPlayers.push({ x: player.x, z: player.z, level: player.level });
         }
     }
+    for (const pending of World.logoutRequests.keys()) {
+        takenUsernames.add(pending);
+    }
 
-    for (const definition of definitions) {
-        // A player removed via World.removePlayer() leaves playerLoop immediately but stays in
-        // World.logoutRequests until the login thread confirms the save (World.ts:1984-1989) --
-        // that window is exactly "previous instance hasn't finished logging out yet" (e.g. just
-        // put to sleep mid-combat, waiting out preventLogoutUntil). occupiedUsernames alone misses
-        // that window; final review (2026-09-30) confirmed the process actually goes through it.
-        if (
-            definition.active ||
-            occupiedUsernames.has(definition.username) ||
-            World.logoutRequests.has(definition.username) ||
-            World.currentTick < definition.shedUntilTick
-        ) {
+    for (const site of sites) {
+        if (World.currentTick < site.shedUntilTick) {
             continue;
         }
+
+        let nearbyPlayer = false;
         for (const player of realPlayers) {
-            if (chebyshevOrInfinity(player.x, player.z, player.level, definition.homeX, definition.homeZ, definition.level) <= ACTIVATION_RADIUS) {
-                spawn(definition);
+            if (chebyshevOrInfinity(player.x, player.z, player.level, site.homeX, site.homeZ, site.level) <= ACTIVATION_RADIUS) {
+                nearbyPlayer = true;
                 break;
             }
+        }
+        if (!nearbyPlayer) {
+            continue;
+        }
+
+        // Roll once per visit -- the moment activeCount drops back to 0 (tick()'s loggingOut
+        // cleanup, or the deactivation pass below), targetSlotCount resets to -1 so the NEXT
+        // visit gets its own fresh roll instead of reusing this one.
+        if (site.targetSlotCount === -1) {
+            site.targetSlotCount = rollSlotCount(MAX_SLOTS_PER_SITE);
+        }
+
+        while (site.activeCount < site.targetSlotCount) {
+            const character = pickUnusedCharacter(CHARACTER_POOL, takenUsernames);
+            if (!character) {
+                break; // pool exhausted near this cluster -- retry next tick, not an error
+            }
+            takenUsernames.add(toSafeName(character.name));
+            spawn(site, character);
         }
     }
 
@@ -505,9 +525,11 @@ function scanActivation(): void {
         }
         if (nearestReal > DEACTIVATION_RADIUS) {
             entry.player.loggingOut = true;
-            entry.definition.active = false;
+            // activeCount/targetSlotCount bookkeeping happens centrally in tick()'s own
+            // loggingOut cleanup branch (Task 5) -- every path that ends a bot's life (sleep,
+            // death, Tier-2 shed) goes through that one place.
         } else if (nearestReal > farthestDist) {
-            // stays active this tick -- tier 2's own candidate to shed, if it ever comes to that.
+            // stays active this tick -- Tier 2's own candidate to shed, if it ever comes to that.
             farthestDist = nearestReal;
             farthestActive = entry;
         }
