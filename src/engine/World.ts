@@ -315,17 +315,43 @@ class World {
         }
 
         // ponytail: hardcoded archetypes/locations for now -- see Bots.ts.
-        // No leading underscore -- PlayerLoading.load()'s base37 round-trip discards it anyway
-        // (World.ts:779's startsWith('bot_') check already depends on this), and Phase 2's
-        // scanActivation() compares this literal directly against player.username, which needs
+        // No leading underscore -- PlayerLoading.load()'s base37 round-trip discards it anyway --
+        // and scanActivation() compares this literal directly against player.username, which needs
         // an exact match, not just the same post-normalization value.
+        //
+        // Usernames are real in-universe names (2026-10-03), not a reserved "bot_" prefix -- that
+        // prefix leaked straight to real players, since toDisplayName() just title-cases the raw
+        // username and there's no separate server-side display name. Bot identity is now tracked by
+        // Bots.isBotUsername() (a Set populated in registerBot()) instead of a naming convention, so
+        // these names can be anything that fits RS2's 12-char base37 charset (letters+digits only --
+        // spaces/underscores don't round-trip, see JString.ts's toBase37). The only real tradeoff:
+        // a bot's name is no longer reserved, so a real player could theoretically pick the same
+        // name -- a non-issue for this project's single-character offline setup (config.ini's
+        // username is fixed to "shared"), but worth knowing if this ever goes multi-account.
         if (Environment.NODE_BOTS_ENABLED) {
-            Bots.registerBot('woodcutter', 'bot_woodcutter1', 3233, 3230, 0);
-            Bots.registerBot('fisherman', 'bot_fisher1', 3102, 3424, 0); // Barbarian Village
-            Bots.registerBot('fisherman', 'bot_fisher2', 2925, 3178, 0); // Musa Point
-            Bots.registerBot('fisherman', 'bot_fisher3', 2986, 3176, 0);
-            Bots.registerBot('firemaker', 'bot_firemaker1', 3253, 3420, 0); // Varrock east bank
-            Bots.registerBot('goblin_fighter', 'bot_fighter1', 3249, 3231, 0); // goblins toward Al Kharid
+            Bots.registerBot('woodcutter', 'Lumberjack', 3233, 3230, 0);
+            // Coordinates were already correct -- confirmed live via a headless World.start() scan
+            // (2026-10-02) that these fishing spots really do exist within a few tiles of each guess.
+            // The real bug was Bots.ts resolving fish-spot ids via NpcType.getId() instead of
+            // CategoryType.getId() (fish spots only expose their kind as a shared category), which
+            // made every fisherman find zero spots regardless of coordinates. Fixed in Bots.ts.
+            Bots.registerBot('fisherman', 'NetCaster1', 3102, 3424, 0); // Barbarian Village
+            Bots.registerBot('fisherman', 'OldSeaDog', 2925, 3178, 0); // Musa Point
+            Bots.registerBot('fisherman', 'Angler99', 2986, 3176, 0); // Rimmington
+            Bots.registerBot('fisherman', 'FishWife1', 2845, 3432, 0, [], 'tree', 1); // Catherby -- original z=3427 was on an unreachable island tile with no path to any fish spot, confirmed via a headless findPath scan (2026-10-03); +5 lands it beside the dock. gender=1 (female) matches the "wife" name
+            Bots.registerBot('fisherman', 'TroutHunt', 2716, 3531, 0); // Seers' Village -- confirmed live 2026-10-03
+            Bots.registerBot('firemaker', 'Pyromaniac', 3253, 3420, 0); // Varrock east bank
+            Bots.registerBot('fighter', 'GobHunter1', 3249, 3231, 0, ['goblin']); // goblins toward Al Kharid
+            // Coordinates confirmed live via the same headless scan.
+            Bots.registerBot('fighter', 'CowPoke99', 3253, 3280, 0, ['cow']); // Lumbridge cow field
+            Bots.registerBot('fighter', 'Rowdy123', 2660, 3309, 0, ['ardougne_guard']); // East Ardougne market guards
+            // Higher-tier woodcutters, Catherby<->Ardougne corridor -- real tree clusters confirmed
+            // live 2026-10-03 (species/coords), levels per server/vendor/content's trees.dbrow.
+            // Bots.ts's woodcutter grant sets Woodcutting 99 + a rune_axe regardless of species.
+            Bots.registerBot('woodcutter', 'WillowCutr', 2743, 3356, 0, [], 'willowtree');
+            Bots.registerBot('woodcutter', 'MapleLoggr', 2714, 3375, 0, [], 'mapletree');
+            Bots.registerBot('woodcutter', 'YewSlayer1', 2760, 3435, 0, [], 'yewtree');
+            Bots.registerBot('woodcutter', 'MagicLogs1', 2698, 3410, 0, [], 'magictree');
         }
 
         setTimeout(() => {
@@ -541,7 +567,7 @@ class World {
                 // bottleneck, likely npc/client-out cost near a busy area, also delays everything
                 // else, including how quickly movement clicks get processed).
                 for (const player of this.playerLoop.all()) {
-                    if (!player.username.startsWith('bot_')) {
+                    if (!Bots.isBotUsername(player.username)) {
                         printDebug(`real player ${player.username}: (${player.x}, ${player.z}) target=${player.target ? player.target.constructor.name : 'null'} targetOp=${player.targetOp} delayed=${player.delayed}`);
                     }
                 }
@@ -801,7 +827,7 @@ class World {
             // actually stored as player.username === 'bot_woodcutter1', not '_bot_woodcutter1').
             // Checking for the underscore this engine can actually store, not the one the spawn
             // literal writes.
-            if (player.username.startsWith('bot_')) {
+            if (Bots.isBotUsername(player.username)) {
                 botPlayerTurnMs += performance.now() - turnStart;
             } else {
                 realPlayerTurnMs += performance.now() - turnStart;

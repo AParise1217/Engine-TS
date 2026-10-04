@@ -1,4 +1,5 @@
 import ObjType from '#/cache/config/ObjType.js';
+import CategoryType from '#/cache/config/CategoryType.js';
 import LocType from '#/cache/config/LocType.js';
 import NpcType from '#/cache/config/NpcType.js';
 import InvType from '#/cache/config/InvType.js';
@@ -50,6 +51,23 @@ const HOME_DRIFT_LIMIT = 30; // if a fight-bot dies and respawns elsewhere, walk
 // 25s invisible at the on-device 500ms tickrate) since a refresh is just a flag + a cheap byte-buffer
 // regen -- negligible even at a much larger bot count than today's 6.
 const APPEARANCE_REFRESH_INTERVAL = 10;
+
+// Ambient overhead chat (Player.say(), the same primitive a CS2 script uses for ~chatplayer) --
+// purely cosmetic "feels alive" flavor, no gameplay effect. Minutes apart, not seconds: real players
+// don't narrate every action either, and this is one `say()` call (a mask bit + a string, same cost
+// class as the appearance refresh above) so it's cheap regardless of interval -- the wide spacing is
+// for believability, not performance. At the 500ms on-device tickrate, 150-400 ticks is ~75-200s.
+const CHAT_INTERVAL_MIN = 150;
+const CHAT_INTERVAL_MAX = 400;
+
+// fighter is the only kind whose flavor isn't keyed by monster -- all three fighter bots share one
+// pool regardless of target, so this doesn't need a per-target split.
+const CHAT_LINES: Record<BotKind, string[]> = {
+    woodcutter: ['Chop chop!', 'This axe could use a sharpen.', "That's a fine piece of timber.", 'Mind the splinters.', 'Nothing like fresh-cut wood.'],
+    fisherman: ["They're biting today!", 'Reel it in...', 'Mind your fingers on the hooks.', 'Fresh catch, coming right up.', 'Quiet out here, just how I like it.'],
+    firemaker: ['Nice and warm by this fire.', "Watch the sparks, don't want to singe anything.", "That's a good burn.", 'Keeps the cold off, at least.'],
+    fighter: ['Come on then!', 'Is that all you’ve got?', "I'll take you down!", 'Ha, missed me.', 'For glory!', 'Watch yourself.']
+};
 
 // A seek that finds nothing (or finds something the bot can never actually reach, e.g. across
 // water) retries every SEEK_INTERVAL_BASE ticks forever unless backed off -- fine on a fast dev
@@ -114,36 +132,36 @@ const REST_RESUME_FRACTION = 0.8;
 // lazily on first real use avoids every id silently coming back -1.
 let ids: {
     inv: number;
-    tree: number;
     logs: number;
     tinderbox: number;
-    fishSpots: number[];
+    runeAxe: number;
+    fishCategories: number[];
     net: number;
     fishingRod: number;
     feather: number;
     harpoon: number;
     lobsterPot: number;
-    goblin: number;
-    goblinTypes: number[];
     coins: number;
 } | null = null;
 
 function getIds() {
     if (!ids) {
-        const goblin = NpcType.getId('goblin');
         ids = {
             inv: InvType.getId('inv'),
-            tree: LocType.getId('tree'),
             logs: ObjType.getId('logs'),
             tinderbox: ObjType.getId('tinderbox'),
-            fishSpots: [NpcType.getId('freshfish'), NpcType.getId('saltfish'), NpcType.getId('rarefish'), NpcType.getId('memberfish')],
+            runeAxe: ObjType.getId('rune_axe'),
+            // Fish spots are only ever registered under a shared CATEGORY (nc_category in content
+            // scripts) -- there is no standalone "[saltfish]" NpcType, only per-location ones like
+            // "[0_44_53_saltfish]". NpcType.getId('saltfish') always returned -1 here, which is why
+            // every fisherman bot found zero spots regardless of coordinates (confirmed live via a
+            // headless World.start() scan, 2026-10-02) -- not a coordinate problem at all.
+            fishCategories: [CategoryType.getId('freshfish'), CategoryType.getId('saltfish'), CategoryType.getId('rarefish'), CategoryType.getId('memberfish')],
             net: ObjType.getId('net'),
             fishingRod: ObjType.getId('fishing_rod'),
             feather: ObjType.getId('feather'),
             harpoon: ObjType.getId('harpoon'),
             lobsterPot: ObjType.getId('lobster_pot'),
-            goblin,
-            goblinTypes: [goblin], // hoisted -- findNearestNpc takes an array, no reason to allocate one every seek
             coins: ObjType.getId('coins')
         };
     }
@@ -274,7 +292,7 @@ function equipArchetype(bot: Player, def: ArchetypeDef): void {
     }
 }
 
-type BotKind = 'woodcutter' | 'fisherman' | 'firemaker' | 'goblin_fighter';
+type BotKind = 'woodcutter' | 'fisherman' | 'firemaker' | 'fighter';
 
 // Permanent record of every known bot "slot" -- created once via registerBot() and never removed.
 // active tracks whether a live Player currently exists for it; scanActivation() (the wake/sleep
@@ -286,6 +304,14 @@ interface BotDefinition {
     homeZ: number;
     level: number;
     active: boolean;
+    // Only meaningful for kind 'fighter' -- NpcType debugnames of the monster(s) to attack (e.g.
+    // ['goblin'], ['cow'], ['ardougne_guard']). Generalized off the original goblin-only fighter so
+    // a new fight-bot location is just a registerBot() call, not new code.
+    targetNpc: string[];
+    // Only meaningful for kind 'woodcutter' -- LocType debugname of the tree species to chop (e.g.
+    // 'tree', 'willowtree', 'magictree'). Generalized the same way as targetNpc above.
+    targetLoc: string;
+    gender: number; // 0 = male, 1 = female (Player.gender's own encoding)
     // Tier 2's shed target is "farthest still-active", which an active bot normally satisfies
     // long before DEACTIVATION_RADIUS is ever reached (homeX/homeZ is fixed, so this distance
     // doesn't drift as the bot walks) -- without this cooldown, final review (2026-09-30) found
@@ -296,6 +322,20 @@ interface BotDefinition {
 }
 
 const definitions: BotDefinition[] = [];
+
+// Real-vs-bot identity used to be a plain `username.startsWith('bot_')` string check (3 call sites,
+// Bots.ts + World.ts) -- fine as long as every bot login name carried that reserved prefix, but that
+// prefix is also what made every ambient bot show up to a real player as "Bot Fisher1" over its head
+// and in its right-click menu (toDisplayName() just title-cases the literal username -- there is no
+// separate server-controlled display name, see World.ts's login flow). Decoupling the two here lets
+// bot usernames be actual in-universe names (World.ts) without losing the real/bot distinction
+// everywhere else. A plain Set, not a regex/convention, so a bot's name can be anything that fits
+// RS2's 12-char base37 charset.
+const botUsernames: Set<string> = new Set();
+
+export function isBotUsername(username: string): boolean {
+    return botUsernames.has(username);
+}
 
 interface BotEntry {
     player: Player;
@@ -308,6 +348,9 @@ interface BotEntry {
     resting: boolean;
     targetHeldTicks: number;
     nextAppearanceRefreshTick: number;
+    nextChatTick: number;
+    targetTypeIds: number[]; // resolved once at spawn from definition.targetNpc -- only used by kind 'fighter'
+    targetLocId: number; // resolved once at spawn from definition.targetLoc -- only used by kind 'woodcutter'
     definition: BotDefinition;
 }
 
@@ -323,7 +366,23 @@ let farthestActive: BotEntry | null = null;
 // outside this file called them individually (World.ts's boot calls were the only caller, and this
 // task moves those onto registerBot()), so there's no reason to keep four public entry points open.
 const GRANTS: Record<BotKind, (bot: Player, inv: Inventory) => void> = {
-    woodcutter: (_bot, inv) => inv.add(getIds().tinderbox, 1),
+    // Real bug (2026-10-03): this bot has carried a tinderbox (for burning its own logs once it has
+    // some -- see the woodcutter tick branch below) but never an axe, since it was first written --
+    // meaning it could never chop a single log in the first place (woodcut.rs2's own axe_checker
+    // proc requires an axe equipped in the weapon slot or in the inventory). A rune_axe plus a flat
+    // Woodcutting 99 lets one bot chop any tree species regardless of which one it's assigned, same
+    // "don't bother with per-species tuning" simplicity as the fighter archetypes' gear pools.
+    woodcutter: (bot, inv) => {
+        bot.setLevel(PlayerStat.WOODCUTTING, 99);
+        inv.add(getIds().tinderbox, 1);
+        const worn = bot.getInventory(InvType.WORN);
+        if (worn) {
+            worn.set(3, { id: getIds().runeAxe, count: 1 });
+            bot.buildAppearance(InvType.WORN);
+        } else {
+            inv.add(getIds().runeAxe, 1);
+        }
+    },
     fisherman: (_bot, inv) => grantFishingGear(inv),
     // ponytail: no real bank interaction -- just tops the logs back up directly when it runs out,
     // standing in for "walked to the bank and withdrew more". Upgrade to a real OpLoc bank
@@ -332,7 +391,7 @@ const GRANTS: Record<BotKind, (bot: Player, inv: Inventory) => void> = {
         inv.add(getIds().tinderbox, 1);
         inv.add(getIds().logs, inv.freeSlotCount);
     },
-    goblin_fighter: bot => {
+    fighter: bot => {
         const pool = getArchetypes();
         const archetype = pickOne(Object.keys(pool) as Archetype[]);
         equipArchetype(bot, pool[archetype]);
@@ -344,16 +403,20 @@ function spawn(definition: BotDefinition): void {
     bot.x = definition.homeX;
     bot.z = definition.homeZ;
     bot.level = definition.level;
+    bot.gender = definition.gender;
+    bot.buildAppearance(bot.appearanceInv);
 
     const inv = bot.getInventory(getIds().inv);
     if (inv) {
         GRANTS[definition.kind](bot, inv);
     }
 
-    // stagger first seek (and first appearance refresh) so a large bot population doesn't all
-    // scan -- or all re-encode their appearance -- on the same tick.
+    // stagger first seek (and first appearance refresh, and first chat line) so a large bot
+    // population doesn't all scan -- or all re-encode their appearance, or all talk at once -- on
+    // the same tick.
     const nextSeekTick = Math.floor(Math.random() * SEEK_INTERVAL_BASE);
     const nextAppearanceRefreshTick = Math.floor(Math.random() * APPEARANCE_REFRESH_INTERVAL);
+    const nextChatTick = World.currentTick + randInt(CHAT_INTERVAL_MIN, CHAT_INTERVAL_MAX);
     bots.add({
         player: bot,
         kind: definition.kind,
@@ -365,6 +428,9 @@ function spawn(definition: BotDefinition): void {
         resting: false,
         targetHeldTicks: 0,
         nextAppearanceRefreshTick,
+        nextChatTick,
+        targetTypeIds: definition.targetNpc.map(name => NpcType.getId(name)),
+        targetLocId: LocType.getId(definition.targetLoc),
         definition
     });
     World.newPlayers.add(bot);
@@ -388,7 +454,7 @@ function backoffSeek(entry: BotEntry): void {
 // mismatch the way 'bot_woodcutter1'/'bot_firemaker1' (both >12 chars, confirmed live to
 // truncate to 'bot_woodcutt'/'bot_firemake') did before this fix -- the same failure class the
 // Phase 2 final review already fixed for a leading underscore, just triggered by length instead.
-export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number): void {
+export function registerBot(kind: BotKind, username: string, x: number, z: number, level: number, targetNpc: string[] = [], targetLoc: string = 'tree', gender: number = 0): void {
     const safeName = toSafeName(username);
 
     // Normalizing fixed the literal-vs-normalized mismatch, but two literals can still normalize
@@ -403,7 +469,8 @@ export function registerBot(kind: BotKind, username: string, x: number, z: numbe
         throw new Error(`duplicate bot username after base37 normalization: '${username}' -> '${safeName}'`);
     }
 
-    definitions.push({ kind, username: safeName, homeX: x, homeZ: z, level, active: false, shedUntilTick: 0 });
+    definitions.push({ kind, username: safeName, homeX: x, homeZ: z, level, active: false, shedUntilTick: 0, targetNpc, targetLoc, gender });
+    botUsernames.add(safeName);
 }
 
 function chebyshevOrInfinity(x1: number, z1: number, level1: number, x2: number, z2: number, level2: number): number {
@@ -424,7 +491,7 @@ function scanActivation(): void {
 
     for (const player of World.playerLoop.all()) {
         occupiedUsernames.add(player.username);
-        if (!player.username.startsWith('bot_')) {
+        if (!botUsernames.has(player.username)) {
             realPlayers.push({ x: player.x, z: player.z, level: player.level });
         }
     }
@@ -551,6 +618,31 @@ function findNearestNpc(x: number, z: number, level: number, typeIds: number[], 
     return best;
 }
 
+// Fish spots only expose their kind via a shared CATEGORY (see getIds()'s fishCategories comment),
+// not their own NpcType id -- otherwise identical to findNearestNpc.
+function findNearestNpcByCategory(x: number, z: number, level: number, categoryIds: number[], radius: number) {
+    let best = null;
+    let bestDist = Infinity;
+
+    for (let dx = -radius; dx <= radius; dx += 8) {
+        for (let dz = -radius; dz <= radius; dz += 8) {
+            for (const npc of World.gameMap.getZone(x + dx, z + dz, level).getAllNpcsSafe(true)) {
+                if (!categoryIds.includes(NpcType.get(npc.type).category)) {
+                    continue;
+                }
+
+                const dist = Math.max(Math.abs(npc.x - x), Math.abs(npc.z - z));
+                if (dist <= radius && dist < bestDist) {
+                    best = npc;
+                    bestDist = dist;
+                }
+            }
+        }
+    }
+
+    return best;
+}
+
 function useHeldOnHeld(bot: Player, primary: number, secondary: number): void {
     // same guard OpHeldUHandler leads with -- without it we re-trigger the action's script every
     // tick, before its own animation/delay (e.g. firemaking) ever gets a chance to complete.
@@ -628,7 +720,7 @@ export function tick(): void {
         consecutiveOverrunTicks = 0;
     }
 
-    const { inv: INV, tree: TREE, logs: LOGS, tinderbox: TINDERBOX, fishSpots: FISH_SPOTS, goblinTypes: GOBLIN_TYPES, coins: COINS } = getIds();
+    const { inv: INV, logs: LOGS, tinderbox: TINDERBOX, fishCategories: FISH_CATEGORIES, coins: COINS } = getIds();
 
     for (const entry of bots) {
         const bot = entry.player;
@@ -658,6 +750,11 @@ export function tick(): void {
         if (World.currentTick >= entry.nextAppearanceRefreshTick) {
             bot.buildAppearance(bot.appearanceInv);
             entry.nextAppearanceRefreshTick = World.currentTick + APPEARANCE_REFRESH_INTERVAL;
+        }
+
+        if (World.currentTick >= entry.nextChatTick) {
+            bot.say(pickOne(CHAT_LINES[entry.kind]));
+            entry.nextChatTick = World.currentTick + randInt(CHAT_INTERVAL_MIN, CHAT_INTERVAL_MAX);
         }
 
         if (!bot.target && (Math.abs(bot.x - entry.homeX) > HOME_DRIFT_LIMIT || Math.abs(bot.z - entry.homeZ) > HOME_DRIFT_LIMIT)) {
@@ -703,7 +800,7 @@ export function tick(): void {
             if (inv.contains(LOGS) && inv.contains(TINDERBOX)) {
                 useHeldOnHeld(bot, TINDERBOX, LOGS);
             } else if (dueToSeek) {
-                const tree = findNearestLoc(bot.x, bot.z, bot.level, TREE, LOC_SEEK_RADIUS);
+                const tree = findNearestLoc(bot.x, bot.z, bot.level, entry.targetLocId, LOC_SEEK_RADIUS);
                 if (tree) {
                     bot.setInteraction(Interaction.ENGINE, tree, CHOP_OP);
                 }
@@ -715,7 +812,7 @@ export function tick(): void {
                 inv.removeAll();
                 grantFishingGear(inv);
             } else if (dueToSeek) {
-                const spot = findNearestNpc(bot.x, bot.z, bot.level, FISH_SPOTS, NPC_SEEK_RADIUS);
+                const spot = findNearestNpcByCategory(bot.x, bot.z, bot.level, FISH_CATEGORIES, NPC_SEEK_RADIUS);
                 if (spot) {
                     bot.setInteraction(Interaction.ENGINE, spot, FISH_OP);
                 }
@@ -727,7 +824,7 @@ export function tick(): void {
             } else if (inv.contains(TINDERBOX)) {
                 useHeldOnHeld(bot, TINDERBOX, LOGS);
             }
-        } else if (entry.kind === 'goblin_fighter') {
+        } else if (entry.kind === 'fighter') {
             const hpFraction = bot.levels[PlayerStat.HITPOINTS] / bot.baseLevels[PlayerStat.HITPOINTS];
             if (entry.resting && hpFraction >= REST_RESUME_FRACTION) {
                 entry.resting = false;
@@ -740,9 +837,9 @@ export function tick(): void {
                 if (loot) {
                     bot.setInteraction(Interaction.ENGINE, loot, TAKE_OP);
                 } else if (!entry.resting) {
-                    const goblin = findNearestNpc(bot.x, bot.z, bot.level, GOBLIN_TYPES, NPC_SEEK_RADIUS);
-                    if (goblin) {
-                        bot.setInteraction(Interaction.ENGINE, goblin, ATTACK_OP);
+                    const target = findNearestNpc(bot.x, bot.z, bot.level, entry.targetTypeIds, NPC_SEEK_RADIUS);
+                    if (target) {
+                        bot.setInteraction(Interaction.ENGINE, target, ATTACK_OP);
                     }
                 }
                 backoffSeek(entry);
