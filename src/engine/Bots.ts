@@ -705,11 +705,15 @@ export function tick(): void {
                 printDebug(`bot breaker: shedding ${farthestActive.player.username} after ${consecutiveOverrunTicks} consecutive over-budget ticks (tick ${World.currentTick})`);
             }
             farthestActive.player.loggingOut = true;
-            farthestActive.definition.active = false;
-            // Blocks scanActivation()'s wake check until this many ticks pass -- without it, the
-            // shed bot's own logout completing (usually within a tick or two) immediately
-            // satisfies ACTIVATION_RADIUS again and undoes the shed (final review, 2026-09-30).
-            farthestActive.definition.shedUntilTick = World.currentTick + OVERLOAD_TICKS_BEFORE_SHED;
+            // activeCount/targetSlotCount bookkeeping happens in tick()'s own loggingOut cleanup
+            // branch (above) -- shedding one slot of a multi-slot site is otherwise identical to
+            // that slot's bot dying.
+            //
+            // Blocks scanActivation()'s whole-site refill until this many ticks pass -- without
+            // it, the shed bot's own logout completing (usually within a tick or two) immediately
+            // re-satisfies ACTIVATION_RADIUS and undoes the shed (final review, 2026-09-30, carried
+            // forward from the single-slot design).
+            farthestActive.site.shedUntilTick = World.currentTick + OVERLOAD_TICKS_BEFORE_SHED;
             farthestActive = null;
             // Give the shed a full window to take effect (or reveal the overload isn't
             // bot-driven at all) before considering shedding a second bot.
@@ -725,11 +729,13 @@ export function tick(): void {
         const bot = entry.player;
         if (bot.loggingOut) {
             // Not just scanActivation()'s own sleep decision -- a bot can also leave via
-            // TIMEOUT_NO_RESPONSE/TIMEOUT_NO_CONNECTION, death, or world shutdown, none of which
-            // touch entry.definition. Without clearing it here too, final review (2026-09-30)
-            // found that definition would be stranded active forever with no live Player and
-            // could never wake again for the rest of the process.
-            entry.definition.active = false;
+            // TIMEOUT_NO_RESPONSE/TIMEOUT_NO_CONNECTION, death (below), or a Tier-2 shed, none of
+            // which otherwise touch entry.site. This is the one place that bookkeeping happens,
+            // for every way a bot's life can end.
+            entry.site.activeCount--;
+            if (entry.site.activeCount === 0) {
+                entry.site.targetSlotCount = -1; // needs a fresh roll on this site's next wake
+            }
             bots.delete(entry);
             continue;
         }
@@ -757,8 +763,15 @@ export function tick(): void {
         }
 
         if (!bot.target && (Math.abs(bot.x - entry.homeX) > HOME_DRIFT_LIMIT || Math.abs(bot.z - entry.homeZ) > HOME_DRIFT_LIMIT)) {
-            // died and respawned elsewhere, most likely -- walk back to post rather than chase it
-            bot.teleport(entry.homeX, entry.homeZ, entry.level);
+            // Died and respawned elsewhere, most likely. There is no death/respawn event in this
+            // engine -- GRANTS/equipArchetype only ever ran once, at this entity's original
+            // spawn() -- so teleporting the SAME (now-bare) entity home just leaves it
+            // permanently ungeared after its first death (the root cause of the reported "stall
+            // guard always a bare warrior" bug). Logging it out instead frees this site's slot;
+            // the unified wake/refill rule in scanActivation() replaces it next tick with a
+            // freshly-rolled pool character -- new name, new archetype, new gear -- as long as a
+            // real player is still nearby.
+            bot.loggingOut = true;
             continue;
         }
 
