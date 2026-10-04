@@ -28,6 +28,38 @@ import { CHARACTER_POOL, jitterOffset, pickOne, pickUnusedCharacter, type PoolCh
 // like firemaking), alchemy (spell-cast-on-item isn't in ServerTriggerType at all -- unclear what
 // packet/component drives it), agility (would need the real course's obstacle loc sequence, not
 // guessed coordinates).
+//
+// ## Adding a new bot site
+//
+// Call Bots.registerBot(kind, x, z, level, targetNpc?, targetLoc?) from World.ts's
+// NODE_BOTS_ENABLED block (next to the existing calls). That's it -- the site starts dormant,
+// and scanActivation() wakes it (rolling a random 0..MAX_SLOTS_PER_SITE population, each slot
+// drawing its own name/gender from CHARACTER_POOL in BotPool.ts) the first time a real player
+// comes within ACTIVATION_RADIUS. No per-bot identity to pick; that's handled for you.
+//
+// ## Adding a new bot kind
+//
+// 1. Add the kind to the BotKind union type below.
+// 2. Add a flavor-text entry to CHAT_LINES keyed by the new kind.
+// 3. Add a GRANTS[newKind] = (bot, inv) => { ... } entry -- this is what equips/stocks a freshly
+//    spawned bot of this kind, same shape as 'woodcutter'/'fisherman'/'firemaker'/'fighter'.
+// 4. Add a branch for the new kind inside tick()'s `for (const entry of bots)` loop -- this is
+//    the actual per-tick AI decision (what to seek, what to do once found/holding the right
+//    item). Look at the 'woodcutter' branch for the simplest shape (seek a loc, use a held item
+//    on it) or 'fighter' for the most complex (seek an NPC, loot, rest-on-low-HP hysteresis).
+//
+// ## Adding new pool characters
+//
+// Add entries to CHARACTER_POOL in BotPool.ts. Run `bun test src/engine/BotPool.test.ts`
+// afterward -- it will fail loudly if a new name doesn't survive toSafeName() cleanly (empty or
+// >12 chars) or collides with an existing entry after normalization.
+//
+// ## Extending identity/archetype variety for a kind other than 'fighter'
+//
+// Only 'fighter' currently rolls a warrior/ranger/mage archetype (getArchetypes()/
+// equipArchetype(), below) on top of the pool-drawn name/gender. A different kind wanting its own
+// archetype-style variance should follow that same pattern: a getXArchetypes() pool of
+// {stats, gearPools} defs, picked once per spawn inside that kind's GRANTS entry.
 
 const CHOP_OP = ServerTriggerType.APLOC1; // tree op[0] "Chop down"
 const FISH_OP = ServerTriggerType.APNPC1; // op[0] on every spot type below ("Lure"/"Net"/"Cage")
