@@ -82,3 +82,43 @@ export function jitterOffset(tiles: number): number {
 export function rollSlotCount(max: number): number {
     return randInt(0, max);
 }
+
+// idk.dat body-part ids grouped by IdkType.type (0..6 for one gender's 7 slots, 7..13 the same 7
+// slots for the other gender) -- callers build this from the real IdkType cache (Bots.ts), this
+// file just does the pure slot-math so it's testable without booting the engine.
+export interface IdkPools {
+    [type: number]: number[];
+}
+
+// Returns a random body-part id for the given slot (0-6) and gender (0 male, 1 female), or null
+// if that slot has no pool entries -- the caller should leave the existing default in place
+// rather than treat that as an error (a disabled/empty slot is a legitimate cache state).
+export function pickIdkForSlot(pools: IdkPools, slot: number, gender: number): number | null {
+    const type = slot + (gender === 1 ? 7 : 0);
+    const pool = pools[type];
+    if (!pool || pool.length === 0) {
+        return null;
+    }
+    return pickOne(pool);
+}
+
+// Rolls one random value per [stat, min, max] triple -- used to give every ambient bot kind
+// (not just the ones with a dedicated archetype roll) a varied, non-default level.
+export function rollStatRanges(ranges: readonly (readonly [stat: number, min: number, max: number])[]): [stat: number, value: number][] {
+    return ranges.map(([stat, min, max]) => [stat, randInt(min, max)]);
+}
+
+// Retries up to maxAttempts random jittered tiles against `isBlocked`, falling back to the exact
+// anchor (homeX, homeZ) -- already assumed walkable, since every site is placed there deliberately
+// -- if every jittered tile is blocked. `isBlocked` is injected so this stays pure/testable; Bots.ts
+// wires it to the real collision map.
+export function pickValidTile(homeX: number, homeZ: number, jitterTiles: number, maxAttempts: number, isBlocked: (x: number, z: number) => boolean): { x: number; z: number } {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const x = homeX + jitterOffset(jitterTiles);
+        const z = homeZ + jitterOffset(jitterTiles);
+        if (!isBlocked(x, z)) {
+            return { x, z };
+        }
+    }
+    return { x: homeX, z: homeZ };
+}

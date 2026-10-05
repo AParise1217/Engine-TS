@@ -1,9 +1,11 @@
 import ObjType from '#/cache/config/ObjType.js';
 import CategoryType from '#/cache/config/CategoryType.js';
+import IdkType from '#/cache/config/IdkType.js';
 import LocType from '#/cache/config/LocType.js';
 import NpcType from '#/cache/config/NpcType.js';
 import InvType from '#/cache/config/InvType.js';
 import Packet from '#/io/Packet.js';
+import { isMapBlocked } from '#/engine/GameMap.js';
 import { Interaction } from '#/engine/entity/Interaction.js';
 import Player from '#/engine/entity/Player.js';
 import { PlayerLoading } from '#/engine/entity/PlayerLoading.js';
@@ -17,7 +19,7 @@ import { WorldStat } from '#/engine/WorldStat.js';
 import Environment from '#/util/Environment.js';
 import { toSafeName } from '#/util/JString.js';
 import { printDebug } from '#/util/Logger.js';
-import { CHARACTER_POOL, jitterOffset, pickOne, pickUnusedCharacter, type PoolCharacter, randInt, rollSlotCount } from '#/engine/BotPool.js';
+import { CHARACTER_POOL, pickIdkForSlot, pickOne, pickUnusedCharacter, pickValidTile, type IdkPools, type PoolCharacter, randInt, rollSlotCount, rollStatRanges } from '#/engine/BotPool.js';
 
 // Ambient "population" bots: real headless Players (no client -- see NetworkPlayer.isClientConnected)
 // driven by a tiny per-tick loop instead of packets, reusing the same setInteraction/executeScript
@@ -302,6 +304,60 @@ function getArchetypes(): Record<Archetype, ArchetypeDef> {
     return archetypes;
 }
 
+// idk.dat body-part ids grouped by IdkType.type (0..6 male slots, 7..13 the same 7 slots for
+// female) -- the same pool the real character-creation screen (IdkSaveDesignHandler) picks from.
+// Without this, every bot keeps Player's hardcoded default body/colors, so same-gender bots of the
+// same kind were indistinguishable (confirmed live 2026-10-05: three identical woodcutters).
+let idkPoolsByType: IdkPools | null = null;
+
+function getIdkPools(): IdkPools {
+    if (!idkPoolsByType) {
+        idkPoolsByType = {};
+        for (let id = 0; id < IdkType.count; id++) {
+            const idk = IdkType.get(id);
+            if (!idk || idk.disable) {
+                continue;
+            }
+            (idkPoolsByType[idk.type] ??= []).push(id);
+        }
+    }
+    return idkPoolsByType;
+}
+
+// Random hairstyle/body/colors per spawn, same pool and gender-slot mapping real character
+// creation uses -- gives every bot a distinct look regardless of kind. The slot-math itself
+// (pickIdkForSlot) lives in BotPool.ts so it has unit test coverage without booting the engine.
+function randomizeAppearance(bot: Player): void {
+    const pools = getIdkPools();
+    for (let slot = 0; slot < 7; slot++) {
+        const id = pickIdkForSlot(pools, slot, bot.gender);
+        if (id !== null) {
+            bot.body[slot] = id;
+        }
+    }
+    for (let i = 0; i < Player.DESIGN_BODY_COLORS.length; i++) {
+        bot.colors[i] = randInt(0, Player.DESIGN_BODY_COLORS[i].length - 1);
+    }
+}
+
+// Flavor-only combat stats for every kind, not just 'fighter' -- without this, every non-fighter
+// bot sat at the default level-1-everything (combat level 3) regardless of site, so the same pool
+// name could show up as a geared high-level fighter at one site and a bare level-3 woodcutter at
+// another (confirmed live 2026-10-05). 'fighter's own equipArchetype() runs after this in GRANTS
+// and overwrites these same stats with its archetype-appropriate range.
+const AMBIENT_STAT_RANGES: [stat: number, min: number, max: number][] = [
+    [PlayerStat.HITPOINTS, 5, 20],
+    [PlayerStat.ATTACK, 1, 15],
+    [PlayerStat.STRENGTH, 1, 15],
+    [PlayerStat.DEFENCE, 1, 15]
+];
+
+function rollAmbientStats(bot: Player): void {
+    for (const [stat, value] of rollStatRanges(AMBIENT_STAT_RANGES)) {
+        bot.setLevel(stat, value);
+    }
+}
+
 function equipArchetype(bot: Player, def: ArchetypeDef): void {
     for (const [stat, min, max] of def.stats) {
         bot.setLevel(stat, randInt(min, max));
@@ -430,15 +486,25 @@ const GRANTS: Record<BotKind, (bot: Player, inv: Inventory) => void> = {
     }
 };
 
+// Jitter can otherwise land inside an unwalkable obstacle right next to the site's anchor (e.g. a
+// bot placed one tile into a beehive enclosure, confirmed live 2026-10-05) -- a few retries against
+// real collision data costs nothing at spawn time. The retry/fallback logic itself (pickValidTile)
+// lives in BotPool.ts so it has unit test coverage without booting the engine; this just wires it
+// to the real collision map.
+function pickSpawnTile(site: BotSite): { x: number; z: number } {
+    return pickValidTile(site.homeX, site.homeZ, JITTER_TILES, 5, (x, z) => isMapBlocked(x, z, site.level));
+}
+
 function spawn(site: BotSite, character: PoolCharacter): void {
     const safeName = toSafeName(character.name);
     const bot = PlayerLoading.load(safeName, new Packet(new Uint8Array(0)), null);
-    const homeX = site.homeX + jitterOffset(JITTER_TILES);
-    const homeZ = site.homeZ + jitterOffset(JITTER_TILES);
+    const { x: homeX, z: homeZ } = pickSpawnTile(site);
     bot.x = homeX;
     bot.z = homeZ;
     bot.level = site.level;
     bot.gender = character.gender;
+    randomizeAppearance(bot);
+    rollAmbientStats(bot);
     bot.buildAppearance(bot.appearanceInv);
 
     const inv = bot.getInventory(getIds().inv);
