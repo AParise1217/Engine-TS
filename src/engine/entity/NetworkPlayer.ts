@@ -5,6 +5,10 @@ import * as rsbuf from '@2004scape/rsbuf';
 import InvType from '#/cache/config/InvType.js';
 import { CoordGrid } from '#/engine/CoordGrid.js';
 import { ModalState } from '#/engine/entity/ModalState.js';
+// Importing Player here (the base class) is the safe direction -- the
+// unsafe one is Player.ts (or anything it statically imports) importing
+// *this* file by value, which is why Player.ts only ever reaches this class
+// through a lazy require() inside create(), never a static import.
 import Player from '#/engine/entity/Player.js';
 import World from '#/engine/World.js';
 import { WorldStat } from '#/engine/WorldStat.js';
@@ -405,9 +409,3 @@ export class NetworkPlayer extends Player {
         }
     }
 }
-
-// Self-registration: lets Player.create() build a real NetworkPlayer
-// without Player.ts (or anything it imports, e.g. PlayerLoading.ts) ever
-// importing NetworkPlayer.ts as a value -- see Player.ts's
-// registerNetworkPlayerFactory() docblock for why that import direction is unsafe.
-Player.registerNetworkPlayerFactory((safeName, name37, hash64, client) => new NetworkPlayer(safeName, name37, hash64, client));

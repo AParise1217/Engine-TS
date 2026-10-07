@@ -29,10 +29,10 @@ import { MoveRestrict } from '#/engine/entity/MoveRestrict.js';
 import { MoveSpeed } from '#/engine/entity/MoveSpeed.js';
 import { MoveStrategy } from '#/engine/entity/MoveStrategy.js';
 // type-only: NetworkPlayer.ts extends Player, so a value-level import here
-// would reintroduce the circular-import crash this file was fixed for. The
-// real NetworkPlayer class reaches Player.create() via
-// registerNetworkPlayerFactory() (called from NetworkPlayer.ts's own module
-// body, a safe derived-imports-base direction), not via a static import here.
+// would reintroduce the circular-import crash this file was fixed for. This
+// type-only import is for isConnected()'s signature below; the real class
+// value is reached inside create() with a lazy require(), not a static
+// import -- see create()'s docblock.
 import type { NetworkPlayer } from '#/engine/entity/NetworkPlayer.js';
 import Npc from '#/engine/entity/Npc.js';
 import Obj from '#/engine/entity/Obj.js';
@@ -103,6 +103,13 @@ export function getExpByLevel(level: number) {
     return levelExperience[level - 2];
 }
 
+// NetworkPlayer.ts extends this class. Never add a value-level
+// `import { NetworkPlayer } from '.../NetworkPlayer.js'` to this file for an
+// instanceof check or direct construction -- that's exactly the import
+// direction that caused a real circular-import TDZ crash on a cold server
+// start. Use isConnected() (narrows `this is NetworkPlayer`) or create()
+// (constructs the right subclass via a lazy require()) instead -- see their
+// own docblocks below for why those are safe and this isn't.
 export default class Player extends PathingEntity {
     // Owned here (not PlayerLoading) so Player.ts doesn't need to import
     // PlayerLoading.ts, which would create a circular import back through
@@ -2238,42 +2245,30 @@ export default class Player extends PathingEntity {
 
     // false by default (headless bots); NetworkPlayer overrides this to
     // check its actual socket state. Lets callers (e.g. World.ts) narrow to
-    // NetworkPlayer without importing it -- see registerNetworkPlayerFactory().
+    // NetworkPlayer without importing it -- see create() below.
     isConnected(): this is NetworkPlayer {
         return false;
     }
 
-    private static networkPlayerFactory: ((safeName: string, name37: bigint, hash64: bigint, client: ClientSocket) => Player) | null = null;
-
-    // Called once from NetworkPlayer.ts's own module body (a safe
-    // derived-imports-base direction) so Player.create() can build a real
-    // NetworkPlayer without this file ever importing NetworkPlayer.ts as a
-    // value -- that import direction is what caused the circular-import
-    // crash this whole mechanism replaces.
-    static registerNetworkPlayerFactory(factory: (safeName: string, name37: bigint, hash64: bigint, client: ClientSocket) => Player): void {
-        Player.networkPlayerFactory = factory;
-    }
-
+    // The only place a real NetworkPlayer gets constructed -- callers
+    // (PlayerLoading.ts, Bots.ts) never construct one directly, so nothing
+    // outside this file needs a value import of NetworkPlayer.ts either.
+    //
+    // The require() below, not a static import, is the load-bearing part:
+    // NetworkPlayer.ts extends Player, so a static top-level import of it
+    // here would re-run the exact circular-import TDZ crash this file was
+    // fixed for (`ReferenceError: Cannot access 'Player' before
+    // initialization` -- see Entity.ts's isPlayer()/isNpc() docblock for the
+    // full pattern this is part of). require() is deferred until this method
+    // actually runs, which is always well after the module graph has
+    // finished its initial load, so there's no TDZ left to hit by then.
     static create(safeName: string, name37: bigint, hash64: bigint, client: ClientSocket | null): Player {
         if (!client) {
             return new Player(safeName, name37, hash64);
         }
 
-        if (!Player.networkPlayerFactory) {
-            // Nothing happened to import NetworkPlayer.ts yet (it's only ever
-            // reachable from here through a value-level import, which this
-            // mechanism exists to avoid). create() only runs at real runtime,
-            // long after the initial module graph has finished loading, so a
-            // synchronous require() here is safe -- it can't hit the TDZ that
-            // a static top-level import of NetworkPlayer.ts would.
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            require('#/engine/entity/NetworkPlayer.js');
-        }
-
-        if (!Player.networkPlayerFactory) {
-            throw new Error('Player.create() required NetworkPlayer.ts but it still did not register a factory.');
-        }
-
-        return Player.networkPlayerFactory(safeName, name37, hash64, client);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { NetworkPlayer } = require('#/engine/entity/NetworkPlayer.js');
+        return new NetworkPlayer(safeName, name37, hash64, client);
     }
 }

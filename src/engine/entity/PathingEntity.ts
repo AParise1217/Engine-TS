@@ -25,6 +25,12 @@ type TargetSubject = {
 
 export type TargetOp = ServerTriggerType | NpcMode;
 
+// Player and Npc (below, this file's callers) both extend this class.
+// Never add `import Player from '.../Player.js'` or `import Npc from
+// '.../Npc.js'` here for an instanceof check -- that's a base class
+// importing its own subclass, which crashes a cold server start with a
+// circular-import TDZ error. Use `target.isPlayer()`/`target.isNpc()`
+// (Entity.ts) instead; they need no import at all.
 export default abstract class PathingEntity extends Entity {
     // constructor properties
     protected readonly moveRestrict: MoveRestrict;

@@ -38,6 +38,12 @@ export default abstract class Entity extends DoublyLinkable {
         return this.isActive;
     }
 
+    // Use these instead of `instanceof Player`/`instanceof Npc` in this file
+    // or PathingEntity.ts specifically: both subclasses extend PathingEntity
+    // (which extends this class), so a value-level import of either here to
+    // support instanceof would be a base class importing its own subclass --
+    // a real circular-import crash on a cold server start, not just a style
+    // nit (see the type-only Npc/Player imports above).
     isPlayer(): this is Player {
         return false;
     }

@@ -37,6 +37,11 @@ import World from '#/engine/World.js';
 import LinkList from '#/datastruct/LinkList.js';
 import { printError } from '#/util/Logger.js';
 
+// Never add `import Player from '.../Player.js'` here for an instanceof
+// check on this.target/a hunted entity -- Player.ts and this file are
+// siblings under PathingEntity, and an unrelated earlier edit importing
+// Player as a value here is exactly what caused a real circular-import
+// crash on a cold server start. Use `target.isPlayer()` (Entity.ts) instead.
 export default class Npc extends PathingEntity {
     // constructor properties
     nid: number;
