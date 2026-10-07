@@ -1,7 +1,6 @@
 import 'dotenv/config';
 
 import InvType from '#/cache/config/InvType.js';
-import { NetworkPlayer } from '#/engine/entity/NetworkPlayer.js';
 import Player, { getExpByLevel, getLevelByExp } from '#/engine/entity/Player.js';
 import { PlayerStat } from '#/engine/entity/PlayerStat.js';
 import World from '#/engine/World.js';
@@ -10,16 +9,13 @@ import ClientSocket from '#/server/ClientSocket.js';
 import { fromBase37, toBase37 } from '#/util/JString.js';
 
 export class PlayerLoading {
-    public static readonly SAV_MAGIC: number = 0x2004;
-    public static readonly SAV_VERSION: number = 6;
-
     static verify(sav: Packet) {
-        if (sav.g2() !== PlayerLoading.SAV_MAGIC) {
+        if (sav.g2() !== Player.SAV_MAGIC) {
             return false;
         }
 
         const version = sav.g2();
-        if (version > PlayerLoading.SAV_VERSION) {
+        if (version > Player.SAV_VERSION) {
             return false;
         }
 
@@ -33,7 +29,7 @@ export class PlayerLoading {
         const name37 = toBase37(name); // always username.
         const safeName = fromBase37(name37); // always safe username.
 
-        const player = client ? new NetworkPlayer(safeName, name37, hash64, client) : new Player(safeName, name37, hash64);
+        const player = Player.create(safeName, name37, hash64, client);
 
         player.lastConnected = World.currentTick;
         player.lastResponse = World.currentTick;
@@ -52,12 +48,12 @@ export class PlayerLoading {
             return player;
         }
 
-        if (sav.g2() !== PlayerLoading.SAV_MAGIC) {
+        if (sav.g2() !== Player.SAV_MAGIC) {
             throw new Error('Invalid save file');
         }
 
         const version = sav.g2();
-        if (version > PlayerLoading.SAV_VERSION) {
+        if (version > Player.SAV_VERSION) {
             throw new Error('Unsupported save version');
         }
 

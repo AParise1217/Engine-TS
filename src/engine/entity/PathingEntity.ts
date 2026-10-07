@@ -11,10 +11,8 @@ import { MoveRestrict } from '#/engine/entity/MoveRestrict.js';
 import { MoveSpeed } from '#/engine/entity/MoveSpeed.js';
 import { MoveStrategy } from '#/engine/entity/MoveStrategy.js';
 import NonPathingEntity from '#/engine/entity/NonPathingEntity.js';
-import Npc from '#/engine/entity/Npc.js';
 import { NpcMode } from '#/engine/entity/NpcMode.js';
 import Obj from '#/engine/entity/Obj.js';
-import Player from '#/engine/entity/Player.js';
 import { canTravel, changeNpcCollision, changePlayerCollision, findNaivePath, findPath, findPathToEntity, findPathToLoc, isApproached, isZoneAllocated, reachedEntity, reachedLoc, reachedObj } from '#/engine/GameMap.js';
 import ServerTriggerType from '#/engine/script/ServerTriggerType.js';
 import World from '#/engine/World.js';
@@ -270,8 +268,8 @@ export default abstract class PathingEntity extends Entity {
         }
         level = Math.max(0, Math.min(level, 3));
 
-        if (!isZoneAllocated(level, x, z) && (!(this instanceof Player) || this.staffModLevel < 3)) {
-            if (this instanceof Player) {
+        if (!isZoneAllocated(level, x, z) && (!this.isPlayer() || this.staffModLevel < 3)) {
+            if (this.isPlayer()) {
                 this.messageGame('Invalid teleport!');
             }
             return;
@@ -399,7 +397,7 @@ export default abstract class PathingEntity extends Entity {
             return false;
         }
         // Los for Npcs is always calculated backwards for all Entity types (tested Player and Npc)
-        if (this instanceof Npc) {
+        if (this.isNpc()) {
             return CoordGrid.distanceTo(this, target) <= range && isApproached(this.level, target.x, target.z, this.x, this.z, target.width, target.length, this.width, this.length);
         }
         return CoordGrid.distanceTo(this, target) <= range && isApproached(this.level, this.x, this.z, target.x, target.z, this.width, this.length, target.width, target.length);
@@ -508,7 +506,7 @@ export default abstract class PathingEntity extends Entity {
     }
 
     setInteraction(interaction: Interaction, target: Entity, op: TargetOp, com?: number): boolean {
-        if (!target.isValid(this instanceof Player ? this.hash64 : undefined)) {
+        if (!target.isValid(this.isPlayer() ? this.hash64 : undefined)) {
             return false;
         }
 
@@ -519,7 +517,7 @@ export default abstract class PathingEntity extends Entity {
 
         this.targetSubject.com = com ? com : -1;
         // Remember initial target type for validation
-        if (target instanceof Npc || target instanceof Loc || target instanceof Obj) {
+        if (target.isNpc() || target instanceof Loc || target instanceof Obj) {
             this.targetSubject.type = target.type;
         } else {
             this.targetSubject.type = -1;
@@ -527,13 +525,13 @@ export default abstract class PathingEntity extends Entity {
 
         this.focus(CoordGrid.fine(target.x, target.width), CoordGrid.fine(target.z, target.length), target instanceof NonPathingEntity && interaction === Interaction.ENGINE);
 
-        if (target instanceof Player) {
+        if (target.isPlayer()) {
             const playerSlot: number = target.slot + 32768;
             if (this.faceEntity !== playerSlot) {
                 this.faceEntity = playerSlot;
                 this.masks |= this.entitymask;
             }
-        } else if (target instanceof Npc) {
+        } else if (target.isNpc()) {
             const nid: number = target.nid;
             if (this.faceEntity !== nid) {
                 this.faceEntity = nid;

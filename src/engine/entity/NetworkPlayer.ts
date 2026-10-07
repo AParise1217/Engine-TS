@@ -56,7 +56,7 @@ export class NetworkPlayer extends Player {
         this.userPath = [];
         this.opcalled = false;
 
-        if (!isClientConnected(this)) {
+        if (!this.isConnected()) {
             return false;
         }
 
@@ -158,7 +158,7 @@ export class NetworkPlayer extends Player {
     }
 
     encodeOut() {
-        if (!isClientConnected(this)) {
+        if (!this.isConnected()) {
             return;
         }
 
@@ -186,6 +186,18 @@ export class NetworkPlayer extends Player {
 
             this.refreshModal = false;
         }
+    }
+
+    override write(message: ServerGameMessage): void {
+        if (!this.isConnected()) {
+            return;
+        }
+
+        this.writeInner(message);
+    }
+
+    override isConnected(): this is NetworkPlayer {
+        return !(this.client instanceof NullClientSocket);
     }
 
     writeInner(message: ServerGameMessage): void {
@@ -394,6 +406,8 @@ export class NetworkPlayer extends Player {
     }
 }
 
-export function isClientConnected(player: Player): player is NetworkPlayer {
-    return player instanceof NetworkPlayer && !(player.client instanceof NullClientSocket);
-}
+// Self-registration: lets Player.create() build a real NetworkPlayer
+// without Player.ts (or anything it imports, e.g. PlayerLoading.ts) ever
+// importing NetworkPlayer.ts as a value -- see Player.ts's
+// registerNetworkPlayerFactory() docblock for why that import direction is unsafe.
+Player.registerNetworkPlayerFactory((safeName, name37, hash64, client) => new NetworkPlayer(safeName, name37, hash64, client));

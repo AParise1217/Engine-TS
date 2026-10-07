@@ -28,11 +28,15 @@ import { ModalState } from '#/engine/entity/ModalState.js';
 import { MoveRestrict } from '#/engine/entity/MoveRestrict.js';
 import { MoveSpeed } from '#/engine/entity/MoveSpeed.js';
 import { MoveStrategy } from '#/engine/entity/MoveStrategy.js';
-import { isClientConnected } from '#/engine/entity/NetworkPlayer.js';
+// type-only: NetworkPlayer.ts extends Player, so a value-level import here
+// would reintroduce the circular-import crash this file was fixed for. The
+// real NetworkPlayer class reaches Player.create() via
+// registerNetworkPlayerFactory() (called from NetworkPlayer.ts's own module
+// body, a safe derived-imports-base direction), not via a static import here.
+import type { NetworkPlayer } from '#/engine/entity/NetworkPlayer.js';
 import Npc from '#/engine/entity/Npc.js';
 import Obj from '#/engine/entity/Obj.js';
 import PathingEntity from '#/engine/entity/PathingEntity.js';
-import { PlayerLoading } from '#/engine/entity/PlayerLoading.js';
 import { PlayerQueueRequest, PlayerQueueType, QueueType, ScriptArgument } from '#/engine/entity/PlayerQueueRequest.js';
 import { PlayerStat, PlayerStatEnabled, PlayerStatFree, PlayerStatNameMap } from '#/engine/entity/PlayerStat.js';
 import InputTracking from '#/engine/entity/tracking/InputTracking.js';
@@ -67,6 +71,7 @@ import UpdateStat from '#/network/game/server/model/UpdateStat.js';
 import VarpLarge from '#/network/game/server/model/VarpLarge.js';
 import VarpSmall from '#/network/game/server/model/VarpSmall.js';
 import ServerGameMessage from '#/network/game/server/ServerGameMessage.js';
+import type ClientSocket from '#/server/ClientSocket.js';
 import { LoggerEventType } from '#/server/logger/LoggerEventType.js';
 import { ChatModePrivate, ChatModePublic, ChatModeTradeDuel } from '#/engine/entity/ChatModes.js';
 import Environment from '#/util/Environment.js';
@@ -99,6 +104,12 @@ export function getExpByLevel(level: number) {
 }
 
 export default class Player extends PathingEntity {
+    // Owned here (not PlayerLoading) so Player.ts doesn't need to import
+    // PlayerLoading.ts, which would create a circular import back through
+    // NetworkPlayer.ts (PlayerLoading constructs NetworkPlayer instances).
+    static readonly SAV_MAGIC: number = 0x2004;
+    static readonly SAV_VERSION: number = 6;
+
     static readonly DESIGN_BODY_COLORS: number[][] = [
         [6798, 107, 10283, 16, 4797, 7744, 5799, 4634, 33697, 22433, 2983, 54193],
         [8741, 12, 64030, 43162, 7735, 8404, 1701, 38430, 24094, 10153, 56621, 4783, 1341, 16578, 35003, 25239],
@@ -189,8 +200,8 @@ export default class Player extends PathingEntity {
 
     save() {
         const sav = Packet.alloc(1);
-        sav.p2(PlayerLoading.SAV_MAGIC); // magic
-        sav.p2(PlayerLoading.SAV_VERSION); // version
+        sav.p2(Player.SAV_MAGIC); // magic
+        sav.p2(Player.SAV_VERSION); // version
 
         sav.p2(this.x);
         sav.p2(this.z);
@@ -2160,13 +2171,9 @@ export default class Player extends PathingEntity {
         }
     }
 
-    write(message: ServerGameMessage) {
-        if (!isClientConnected(this)) {
-            return;
-        }
-
-        this.writeInner(message);
-    }
+    // no-op by default; NetworkPlayer overrides this to actually send.
+    // (kept here, not abstract, so headless bots can call write() freely)
+    write(_message: ServerGameMessage) {}
 
     unsetMapFlag() {
         this.clearWaypoints();
@@ -2223,5 +2230,50 @@ export default class Player extends PathingEntity {
         }
 
         return super.isValid();
+    }
+
+    override isPlayer(): this is Player {
+        return true;
+    }
+
+    // false by default (headless bots); NetworkPlayer overrides this to
+    // check its actual socket state. Lets callers (e.g. World.ts) narrow to
+    // NetworkPlayer without importing it -- see registerNetworkPlayerFactory().
+    isConnected(): this is NetworkPlayer {
+        return false;
+    }
+
+    private static networkPlayerFactory: ((safeName: string, name37: bigint, hash64: bigint, client: ClientSocket) => Player) | null = null;
+
+    // Called once from NetworkPlayer.ts's own module body (a safe
+    // derived-imports-base direction) so Player.create() can build a real
+    // NetworkPlayer without this file ever importing NetworkPlayer.ts as a
+    // value -- that import direction is what caused the circular-import
+    // crash this whole mechanism replaces.
+    static registerNetworkPlayerFactory(factory: (safeName: string, name37: bigint, hash64: bigint, client: ClientSocket) => Player): void {
+        Player.networkPlayerFactory = factory;
+    }
+
+    static create(safeName: string, name37: bigint, hash64: bigint, client: ClientSocket | null): Player {
+        if (!client) {
+            return new Player(safeName, name37, hash64);
+        }
+
+        if (!Player.networkPlayerFactory) {
+            // Nothing happened to import NetworkPlayer.ts yet (it's only ever
+            // reachable from here through a value-level import, which this
+            // mechanism exists to avoid). create() only runs at real runtime,
+            // long after the initial module graph has finished loading, so a
+            // synchronous require() here is safe -- it can't hit the TDZ that
+            // a static top-level import of NetworkPlayer.ts would.
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            require('#/engine/entity/NetworkPlayer.js');
+        }
+
+        if (!Player.networkPlayerFactory) {
+            throw new Error('Player.create() required NetworkPlayer.ts but it still did not register a factory.');
+        }
+
+        return Player.networkPlayerFactory(safeName, name37, hash64, client);
     }
 }

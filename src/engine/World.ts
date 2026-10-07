@@ -43,7 +43,6 @@ import { PlayerTimerType } from '#/engine/entity/EntityTimer.js';
 import { HuntModeType } from '#/engine/entity/hunt/HuntModeType.js';
 import Loc from '#/engine/entity/Loc.js';
 import LocObjEvent from '#/engine/entity/LocObjEvent.js';
-import { isClientConnected, NetworkPlayer } from '#/engine/entity/NetworkPlayer.js';
 import Npc from '#/engine/entity/Npc.js';
 import { NpcEventRequest, NpcEventType } from '#/engine/entity/NpcEventRequest.js';
 import { NpcStat } from '#/engine/entity/NpcStat.js';
@@ -676,7 +675,7 @@ class World {
                     player.afkEventReady = Math.random() < (player.zonesAfk() ? World.AFK_CHANCE2 : World.AFK_CHANCE1);
                 }
 
-                if (isClientConnected(player) && player.decodeIn()) {
+                if (player.isConnected() && player.decodeIn()) {
                     const followingPlayer = player.targetOp === ServerTriggerType.APPLAYER3 || player.targetOp === ServerTriggerType.OPPLAYER3;
                     if (player.userPath.length > 0 || player.opcalled) {
                         if (player.delayed) {
@@ -718,7 +717,7 @@ class World {
                 }
             } catch (err) {
                 console.error(err);
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.logout();
                     player.client.close();
                 }
@@ -807,7 +806,7 @@ class World {
                 }
             } catch (err) {
                 console.error(err);
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.logout();
                     player.client.close();
                 }
@@ -909,7 +908,7 @@ class World {
             if (this.logoutRequests.has(player.username)) {
                 player.addSessionLog(LoggerEventType.ENGINE, 'Tried to log in - old session is mid-logout');
 
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.client.send(Uint8Array.from([5]));
                     player.client.close();
                 }
@@ -924,12 +923,12 @@ class World {
                         continue;
                     }
 
-                    if (isClientConnected(other)) {
+                    if (other.isConnected()) {
                         player.addSessionLog(LoggerEventType.MODERATOR, 'Logged to world ' + Environment.NODE_ID + ' replacing session', other.client.uuid);
                         other.client.close();
                     }
 
-                    if (other instanceof NetworkPlayer && player instanceof NetworkPlayer) {
+                    if (other.isConnected() && player.isConnected()) {
                         other.client = player.client;
                         other.session = other.client.uuid;
                         other.client.send(Uint8Array.from([15]));
@@ -956,7 +955,7 @@ class World {
                     continue;
                 }
 
-                if (player instanceof NetworkPlayer) {
+                if (player.isConnected()) {
                     player.addSessionLog(LoggerEventType.ENGINE, 'Tried to log in - already logged in');
                     player.client.send(Uint8Array.from([5]));
                     player.client.close();
@@ -967,7 +966,7 @@ class World {
 
             // prevent logging in when the server is shutting down
             if (this.shutdownSoon) {
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.addSessionLog(LoggerEventType.ENGINE, 'Tried to log in - server is shutting down');
                     this.forceLogout(player, 14);
                 }
@@ -979,14 +978,14 @@ class World {
             const slot: number = this.getNextPlayerSlot();
             if (slot === -1) {
                 // world full
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.addSessionLog(LoggerEventType.ENGINE, 'Tried to log in - world full');
                     this.forceLogout(player, 7);
                 }
                 continue;
             }
 
-            if (isClientConnected(player)) {
+            if (player.isConnected()) {
                 if (player.reconnecting) {
                     player.addSessionLog(LoggerEventType.MODERATOR, 'Logged in (client reports reconnecting)');
                 } else {
@@ -1175,7 +1174,7 @@ class World {
         this.cycleStats[WorldStat.BANDWIDTH_OUT] = 0; // reset bandwidth counter
 
         for (const player of this.playerLoop.all()) {
-            if (!isClientConnected(player)) {
+            if (!player.isConnected()) {
                 continue;
             }
 
@@ -1199,7 +1198,7 @@ class World {
                 player.encodeOut();
             } catch (err) {
                 console.error(err);
-                if (isClientConnected(player)) {
+                if (player.isConnected()) {
                     player.logout();
                     player.client.close();
                 }
@@ -1284,7 +1283,7 @@ class World {
 
     private processShutdown(): void {
         for (const player of this.playerLoop.all()) {
-            if (isClientConnected(player)) {
+            if (player.isConnected()) {
                 player.logout();
                 player.client.close();
             }
@@ -1676,7 +1675,7 @@ class World {
             return;
         }
 
-        if (isClientConnected(player)) {
+        if (player.isConnected()) {
             player.logout();
             player.client.close();
         }
@@ -1706,7 +1705,7 @@ class World {
             username: player.username
         });
 
-        if (isClientConnected(player)) {
+        if (player.isConnected()) {
             if (response !== -1) {
                 player.client.send(Uint8Array.from([response]));
             }
@@ -2099,7 +2098,7 @@ class World {
                 if (player) {
                     player.loggingOut = true;
 
-                    if (isClientConnected(player)) {
+                    if (player.isConnected()) {
                         player.logout();
                         player.client.close();
                     }
@@ -2353,7 +2352,7 @@ class World {
         const other = this.getPlayerByUsername(username);
         if (other) {
             other.loggingOut = true;
-            if (isClientConnected(other)) {
+            if (other.isConnected()) {
                 other.logout();
                 other.client.close();
             }

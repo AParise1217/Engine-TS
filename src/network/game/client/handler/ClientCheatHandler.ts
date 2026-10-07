@@ -19,7 +19,6 @@ import World from '#/engine/World.js';
 import { EntityLifeCycle } from '#/engine/entity/EntityLifeCycle.js';
 import Loc from '#/engine/entity/Loc.js';
 import { MoveStrategy } from '#/engine/entity/MoveStrategy.js';
-import { isClientConnected } from '#/engine/entity/NetworkPlayer.js';
 import Npc from '#/engine/entity/Npc.js';
 import Player, { getExpByLevel } from '#/engine/entity/Player.js';
 import { PlayerStat, PlayerStatEnabled, PlayerStatMap } from '#/engine/entity/PlayerStat.js';
@@ -605,7 +604,7 @@ export default class ClientCheatHandler extends ClientGameMessageHandler<ClientC
                 const other = World.getPlayerByUsername(username);
                 if (other) {
                     other.loggingOut = true;
-                    if (isClientConnected(other)) {
+                    if (other.isConnected()) {
                         other.logout();
                         other.client.close();
                     }

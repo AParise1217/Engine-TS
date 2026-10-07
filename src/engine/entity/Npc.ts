@@ -25,7 +25,6 @@ import { NpcMode } from '#/engine/entity/NpcMode.js';
 import { NpcQueueRequest } from '#/engine/entity/NpcQueueRequest.js';
 import { NpcStat } from '#/engine/entity/NpcStat.js';
 import PathingEntity from '#/engine/entity/PathingEntity.js';
-import Player from '#/engine/entity/Player.js';
 import { isFlagged, findNaivePath } from '#/engine/GameMap.js';
 import ScriptFile from '#/engine/script/ScriptFile.js';
 import { HuntIterator } from '#/engine/script/ScriptIterators.js';
@@ -374,6 +373,10 @@ export default class Npc extends PathingEntity {
             return false;
         }
         return super.isValid();
+    }
+
+    override isNpc(): this is Npc {
+        return true;
     }
 
     clearPatrol() {
@@ -746,7 +749,7 @@ export default class Npc extends PathingEntity {
     }
 
     private playerEscapeMode(): void {
-        if (!(this.target instanceof Player)) {
+        if (!this.target?.isPlayer()) {
             throw new Error('[Npc] Target must be a Player for playerescape mode.');
         }
 
@@ -803,7 +806,7 @@ export default class Npc extends PathingEntity {
     private playerFollowMode(): void {
         const player = this.target;
 
-        if (!(player instanceof Player)) {
+        if (!player?.isPlayer()) {
             throw new Error('[Npc] Target must be a Player for playerfollow mode.');
         }
 
@@ -815,13 +818,13 @@ export default class Npc extends PathingEntity {
     }
 
     private playerFaceMode(): void {
-        if (!(this.target instanceof Player)) {
+        if (!this.target?.isPlayer()) {
             throw new Error('[Npc] Target must be a Player for playerface mode.');
         }
     }
 
     private playerFaceCloseMode(): void {
-        if (!(this.target instanceof Player)) {
+        if (!this.target?.isPlayer()) {
             throw new Error('[Npc] Target must be a Player for playerfaceclose mode.');
         }
 
@@ -926,7 +929,7 @@ export default class Npc extends PathingEntity {
         const hunted: HuntIterator = new HuntIterator(World.currentTick, this.level, this.x, this.z, this.huntrange, hunt.checkVis, -1, -1, HuntModeType.PLAYER);
 
         for (const player of hunted) {
-            if (!(player instanceof Player)) {
+            if (!player.isPlayer()) {
                 throw new Error('[Npc] huntAll must be of type Player here.');
             }
 
